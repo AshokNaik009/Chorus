@@ -77,6 +77,24 @@ export function buildTemplate(
   }
 }
 
+/** Structural validation of an untrusted layout tree (for loading state). */
+export function isLayoutNode(value: unknown): value is LayoutNode {
+  if (!value || typeof value !== 'object') return false;
+  const node = value as Record<string, unknown>;
+  if (node.type === 'pane') return typeof node.sessionId === 'string';
+  if (node.type === 'split') {
+    return (
+      (node.direction === 'row' || node.direction === 'column') &&
+      Array.isArray(node.sizes) &&
+      node.sizes.every((n) => typeof n === 'number') &&
+      Array.isArray(node.children) &&
+      node.children.length > 0 &&
+      node.children.every(isLayoutNode)
+    );
+  }
+  return false;
+}
+
 /** All pane session ids, left-to-right / top-to-bottom. */
 export function collectSessionIds(node: LayoutNode): string[] {
   if (node.type === 'pane') return [node.sessionId];

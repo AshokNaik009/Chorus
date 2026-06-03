@@ -5,6 +5,7 @@ import {
   defaultWorkspaceState,
   getActiveWorkspace,
   removeSessionConfig,
+  parseWorkspaceState,
   removeWorkspace,
   setActiveWorkspace,
   setWorkspaceLayout,
@@ -85,5 +86,36 @@ describe('workspace model', () => {
     const layout = buildTemplate(2, ['x', 'y']);
     const next = setWorkspaceLayout(s, id, layout);
     expect(getActiveWorkspace(next)?.layout).toEqual(layout);
+  });
+});
+
+describe('parseWorkspaceState', () => {
+  it('round-trips valid state', () => {
+    const s = defaultWorkspaceState('~/x');
+    expect(parseWorkspaceState(JSON.parse(JSON.stringify(s)))).toEqual(s);
+  });
+
+  it('rejects null / non-objects / wrong version', () => {
+    expect(parseWorkspaceState(null)).toBeNull();
+    expect(parseWorkspaceState('nope')).toBeNull();
+    expect(parseWorkspaceState({ version: 1, layout: {}, sessions: [] })).toBeNull();
+  });
+
+  it('rejects empty or malformed workspaces', () => {
+    expect(parseWorkspaceState({ version: 2, workspaces: [], activeWorkspaceId: 'x' })).toBeNull();
+    expect(
+      parseWorkspaceState({
+        version: 2,
+        workspaces: [{ id: 'a', name: 'n' /* missing layout */ }],
+        activeWorkspaceId: 'a',
+      }),
+    ).toBeNull();
+  });
+
+  it('repairs a dangling activeWorkspaceId to the first workspace', () => {
+    const s = defaultWorkspaceState();
+    const broken = { ...s, activeWorkspaceId: 'gone' };
+    const parsed = parseWorkspaceState(JSON.parse(JSON.stringify(broken)));
+    expect(parsed?.activeWorkspaceId).toBe(s.workspaces[0].id);
   });
 });

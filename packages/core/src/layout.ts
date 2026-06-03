@@ -1,0 +1,134 @@
+import type { LayoutNode } from './models.js';
+
+/** v1 layout templates (PRD §3: ceiling of 4 panes). */
+export type LayoutTemplate = 1 | 2 | 4;
+
+let idCounter = 0;
+
+/** Generate a process-unique session id without any platform globals. */
+export function createSessionId(): string {
+  idCounter += 1;
+  return `s-${Date.now().toString(36)}-${idCounter}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+}
+
+function pane(sessionId: string): LayoutNode {
+  return { type: 'pane', sessionId };
+}
+
+/**
+ * Build a layout tree for a template. See PRD US-3.1:
+ * - 1 pane: a single leaf
+ * - 2 panes: a single row split (side by side)
+ * - 4 panes: 2x2 nested splits (two stacked rows, each split in two)
+ */
+export function buildTemplate(
+  template: LayoutTemplate,
+  ids: string[] = Array.from({ length: template }, () => createSessionId()),
+): LayoutNode {
+  if (ids.length !== template) {
+    throw new Error(`buildTemplate(${template}) needs ${template} ids`);
+  }
+  switch (template) {
+    case 1:
+      return pane(ids[0]);
+    case 2:
+      return {
+        type: 'split',
+        direction: 'row',
+        sizes: [50, 50],
+        children: [pane(ids[0]), pane(ids[1])],
+      };
+    case 4:
+      return {
+        type: 'split',
+        direction: 'column',
+        sizes: [50, 50],
+        children: [
+          {
+            type: 'split',
+            direction: 'row',
+            sizes: [50, 50],
+            children: [pane(ids[0]), pane(ids[1])],
+          },
+          {
+            type: 'split',
+            direction: 'row',
+            sizes: [50, 50],
+            children: [pane(ids[2]), pane(ids[3])],
+          },
+        ],
+      };
+  }
+}
+
+/** All pane session ids, left-to-right / top-to-bottom. */
+export function collectSessionIds(node: LayoutNode): string[] {
+  if (node.type === 'pane') return [node.sessionId];
+  return node.children.flatMap(collectSessionIds);
+}
+
+/** Count leaf panes. */
+export function countPanes(node: LayoutNode): number {
+  return collectSessionIds(node).length;
+}
+
+/**
+ * Remove a pane by session id, collapsing any split left with a single child
+ * and renormalizing sibling sizes. Returns the new tree, or null if the tree
+ * becomes empty. Pure — never mutates the input.
+ */
+export function removePane(
+  node: LayoutNode,
+  sessionId: string,
+): LayoutNode | null {
+  if (node.type === 'pane') {
+    return node.sessionId === sessionId ? null : node;
+  }
+
+  const kept: { child: LayoutNode; size: number }[] = [];
+  node.children.forEach((child, i) => {
+    const next = removePane(child, sessionId);
+    if (next) {
+      kept.push({
+        child: next,
+        size: node.sizes[i] ?? 100 / node.children.length,
+      });
+    }
+  });
+
+  if (kept.length === 0) return null;
+  if (kept.length === 1) return kept[0].child;
+
+  const total = kept.reduce((sum, k) => sum + k.size, 0) || 1;
+  return {
+    type: 'split',
+    direction: node.direction,
+    children: kept.map((k) => k.child),
+    sizes: kept.map((k) => (k.size / total) * 100),
+  };
+}
+
+/**
+ * Immutably write a split node's `sizes`, located by a path of child indices
+ * from the root (root split = []). Used to reflect sash drags back into the
+ * layout tree (US-3.2). No-op if the path does not land on a split.
+ */
+export function setSizesAtPath(
+  node: LayoutNode,
+  path: number[],
+  sizes: number[],
+): LayoutNode {
+  if (node.type !== 'split') return node;
+  if (path.length === 0) {
+    return { ...node, sizes: [...sizes] };
+  }
+  const [index, ...rest] = path;
+  return {
+    ...node,
+    children: node.children.map((child, i) =>
+      i === index ? setSizesAtPath(child, rest, sizes) : child,
+    ),
+  };
+}

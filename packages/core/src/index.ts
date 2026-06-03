@@ -8,5 +8,6 @@ export * from './models.js';
 export * from './pty.js';
 export * from './persistence.js';
 export * from './status.js';
+export * from './layout.js';
 export * from './emitter.js';
 export * from './session-manager.js';

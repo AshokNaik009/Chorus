@@ -30,3 +30,21 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 13px;
 }
+
+@keyframes pane-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--status-waiting);
+  }
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* allotment sash theming to match the dark theme */
+.allotment-module_splitView__L-yRc {
+  --separator-border: var(--border);
+  --focus-border: var(--accent);
+}

@@ -1,7 +1,24 @@
 import type { LayoutNode } from './models.js';
 
-/** v1 layout templates (PRD §3: ceiling of 4 panes). */
-export type LayoutTemplate = 1 | 2 | 4;
+/** Layout templates. 1/2/4 from the PRD; 3 and 6 added for more sessions. */
+export type LayoutTemplate = 1 | 2 | 3 | 4 | 6;
+
+/** Equal-percentage sizes that sum to 100, last bucket absorbing rounding. */
+function equalSizes(n: number): number[] {
+  const base = Math.floor((100 / n) * 100) / 100;
+  const sizes = Array.from({ length: n }, () => base);
+  sizes[n - 1] = Math.round((100 - base * (n - 1)) * 100) / 100;
+  return sizes;
+}
+
+function rowOf(ids: string[]): LayoutNode {
+  return {
+    type: 'split',
+    direction: 'row',
+    sizes: equalSizes(ids.length),
+    children: ids.map(pane),
+  };
+}
 
 let idCounter = 0;
 
@@ -34,30 +51,27 @@ export function buildTemplate(
     case 1:
       return pane(ids[0]);
     case 2:
-      return {
-        type: 'split',
-        direction: 'row',
-        sizes: [50, 50],
-        children: [pane(ids[0]), pane(ids[1])],
-      };
+      return rowOf([ids[0], ids[1]]);
+    case 3:
+      return rowOf([ids[0], ids[1], ids[2]]);
     case 4:
       return {
         type: 'split',
         direction: 'column',
         sizes: [50, 50],
         children: [
-          {
-            type: 'split',
-            direction: 'row',
-            sizes: [50, 50],
-            children: [pane(ids[0]), pane(ids[1])],
-          },
-          {
-            type: 'split',
-            direction: 'row',
-            sizes: [50, 50],
-            children: [pane(ids[2]), pane(ids[3])],
-          },
+          rowOf([ids[0], ids[1]]),
+          rowOf([ids[2], ids[3]]),
+        ],
+      };
+    case 6:
+      return {
+        type: 'split',
+        direction: 'column',
+        sizes: [50, 50],
+        children: [
+          rowOf([ids[0], ids[1], ids[2]]),
+          rowOf([ids[3], ids[4], ids[5]]),
         ],
       };
   }

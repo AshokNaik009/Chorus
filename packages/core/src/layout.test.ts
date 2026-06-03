@@ -37,6 +37,24 @@ describe('buildTemplate', () => {
     expect(countPanes(node)).toBe(4);
   });
 
+  it('3-pane is a row of three equal panes', () => {
+    const node = buildTemplate(3, ['a', 'b', 'c']);
+    if (node.type !== 'split') throw new Error('expected split');
+    expect(node.direction).toBe('row');
+    expect(node.children).toHaveLength(3);
+    expect(collectSessionIds(node)).toEqual(['a', 'b', 'c']);
+    expect(node.sizes.reduce((s, n) => s + n, 0)).toBeCloseTo(100);
+  });
+
+  it('6-pane is two rows of three (2x3)', () => {
+    const node = buildTemplate(6, ['a', 'b', 'c', 'd', 'e', 'f']);
+    if (node.type !== 'split') throw new Error('expected split');
+    expect(node.direction).toBe('column');
+    expect(node.children).toHaveLength(2);
+    expect(countPanes(node)).toBe(6);
+    expect(collectSessionIds(node)).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+  });
+
   it('rejects a mismatched id count', () => {
     expect(() => buildTemplate(4, ['a', 'b'])).toThrow();
   });

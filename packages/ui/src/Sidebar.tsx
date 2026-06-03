@@ -70,24 +70,45 @@ function EditableLabel({
       />
     );
   }
+  const startEditing = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDraft(value);
+    setEditing(true);
+  };
   return (
     <span
-      onDoubleClick={(e) => {
-        e.stopPropagation();
-        setDraft(value);
-        setEditing(true);
-      }}
-      title="Double-click to rename"
-      style={{
-        flex: 1,
-        minWidth: 0,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
-        ...style,
-      }}
+      style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 4 }}
     >
-      {value}
+      <span
+        onDoubleClick={startEditing}
+        title="Double-click or ✎ to rename"
+        style={{
+          flex: 1,
+          minWidth: 0,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          ...style,
+        }}
+      >
+        {value}
+      </span>
+      <button
+        onClick={startEditing}
+        title="Rename"
+        style={{
+          background: 'transparent',
+          border: 'none',
+          color: 'var(--fg-muted)',
+          cursor: 'pointer',
+          fontSize: 11,
+          lineHeight: 1,
+          padding: 0,
+          opacity: 0.5,
+        }}
+      >
+        ✎
+      </button>
     </span>
   );
 }

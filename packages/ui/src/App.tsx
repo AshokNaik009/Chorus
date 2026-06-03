@@ -199,12 +199,17 @@ export function App({ manager, persistence, defaultCwd = '~' }: AppProps) {
     setMaximizedId(null);
   };
 
-  const startSession = (sessionId: string, cwd: string, command?: string) => {
+  const startSession = (
+    sessionId: string,
+    cwd: string,
+    command?: string,
+    title?: string,
+  ) => {
     if (!state || !active) return;
     const label = command === 'claude' ? 'claude' : 'shell';
     const cfg: SessionConfig = {
       sessionId,
-      title: `${label} · ${basename(cwd)}`,
+      title: title?.trim() || `${label} · ${basename(cwd)}`,
       cwd,
     };
     void manager.spawn(cfg, { cols: 80, rows: 24 }, { command });
@@ -347,7 +352,9 @@ export function App({ manager, persistence, defaultCwd = '~' }: AppProps) {
           ) : (
             <PaneLauncher
               defaultCwd={active?.defaultCwd ?? defaultCwd}
-              onStart={(cwd, command) => startSession(sessionId, cwd, command)}
+              onStart={(cwd, command, title) =>
+                startSession(sessionId, cwd, command, title)
+              }
             />
           )}
         </div>

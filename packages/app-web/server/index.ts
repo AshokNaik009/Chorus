@@ -11,10 +11,31 @@ import fs from 'node:fs';
 import process from 'node:process';
 import { WebSocketServer, WebSocket } from 'ws';
 import pty, { type IPty } from 'node-pty';
-import { shellLaunchArgs } from '@app/core';
+import {
+  buildClaudeHookSettings,
+  shellLaunchArgs,
+  withClaudeHooks,
+} from '@app/core';
 import type { ClientMsg, ServerMsg } from '../src/protocol.js';
 
 const PORT = Number(process.env.PTY_WS_PORT ?? 3001);
+
+/**
+ * Write the Claude Code status hooks (Notification/Stop -> OSC) to a temp file
+ * once at startup; every claude session is launched with `--settings <file>`.
+ * The OSC is namespaced per stream, so one shared file serves all sessions.
+ */
+function installHooksFile(): string | null {
+  try {
+    const file = path.join(os.tmpdir(), 'pane-claude-hooks.json');
+    fs.writeFileSync(file, JSON.stringify(buildClaudeHookSettings(), null, 2));
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+const HOOKS_FILE = installHooksFile();
 
 function defaultShell(): string {
   if (process.platform === 'win32') return 'pwsh.exe';
@@ -75,7 +96,10 @@ wss.on('connection', (ws) => {
       case 'spawn': {
         if (procs.has(msg.sessionId)) return; // idempotent
         const shell = msg.shell || defaultShell();
-        const args = shellLaunchArgs(msg.command, process.platform === 'win32');
+        const command = HOOKS_FILE
+          ? withClaudeHooks(msg.command, HOOKS_FILE)
+          : msg.command;
+        const args = shellLaunchArgs(command, process.platform === 'win32');
         const proc = pty.spawn(shell, args, {
           name: 'xterm-256color',
           cols: msg.cols || 80,

@@ -20,7 +20,9 @@ export type StatusEvent =
   /** User submitted a prompt (Enter on a non-empty line). Fallback heuristic. */
   | { type: 'submit' }
   /** First PTY output after spawn → prompt is ready. Fallback heuristic. */
-  | { type: 'firstOutput' };
+  | { type: 'firstOutput' }
+  /** A quiet period (no output) after running. Fallback heuristic → idle. */
+  | { type: 'quiet' };
 
 export const INITIAL_STATUS: SessionStatus = 'spawning';
 
@@ -45,6 +47,10 @@ export function statusReducer(
     case 'firstOutput':
       // First output means the initial prompt rendered and is idle.
       return state === 'spawning' ? 'idle' : state;
+    case 'quiet':
+      // Output stopped after a heuristic `running`; treat as idle. Callers only
+      // dispatch this when no hook has been seen, so hooks are never overridden.
+      return state === 'running' ? 'idle' : state;
     default: {
       // Exhaustiveness guard.
       const _never: never = event;

@@ -60,6 +60,16 @@ describe('statusReducer', () => {
     ).toBe('idle');
   });
 
+  it('quiet after running -> idle (fallback)', () => {
+    expect(statusReducer('running', { type: 'quiet' })).toBe('idle');
+  });
+
+  it('quiet does nothing outside running', () => {
+    expect(statusReducer('idle', { type: 'quiet' })).toBe('idle');
+    expect(statusReducer('waiting', { type: 'quiet' })).toBe('waiting');
+    expect(statusReducer('spawning', { type: 'quiet' })).toBe('spawning');
+  });
+
   it('exit -> exited from any state', () => {
     const states: SessionStatus[] = [
       'spawning',

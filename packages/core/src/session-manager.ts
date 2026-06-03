@@ -1,6 +1,7 @@
 import type { SessionConfig, SessionStatus } from './models.js';
 import type { Disposable, PtyBackend } from './pty.js';
 import { Emitter } from './emitter.js';
+import { OscStatusScanner } from './osc.js';
 import {
   statusReducer,
   type HookStatus,
@@ -25,25 +26,56 @@ export interface StatusChange {
   status: SessionStatus;
 }
 
+// Access the ambient timer globals without depending on DOM/node lib types,
+// keeping @app/core dependency-free. Reads the live property at call time, so
+// test fake-timers that patch globalThis still apply.
+const timers = globalThis as unknown as {
+  setTimeout(fn: () => void, ms: number): number;
+  clearTimeout(handle: number): void;
+};
+
+export interface SessionManagerOptions {
+  /**
+   * Fallback only: ms of no output after a heuristic `running` before we treat
+   * the session as idle. Disabled once any hook is seen. Default 1500.
+   */
+  fallbackIdleMs?: number;
+}
+
+interface Internal {
+  scanner: OscStatusScanner;
+  output: Emitter<string>;
+  subs: Disposable[];
+  firstOutputSeen: boolean;
+  quietTimer: number | null;
+}
+
 /**
  * Owns the set of sessions and is the single entry point the UI uses to drive
- * terminals. It delegates ALL terminal I/O to an injected `PtyBackend` (the
- * seam) and emits session-list + status-change events. The UI never touches
- * node-pty/ws/IPC directly. See PRD §5.2, Epic 2, §11.
+ * terminals. All terminal I/O is delegated to an injected `PtyBackend`. Incoming
+ * PTY data is run through a per-session OSC scanner (PRD §5.4) that surfaces
+ * authoritative hook statuses and strips the control bytes before the UI sees
+ * them. A gated stream heuristic (submit -> running, quiet -> idle) covers the
+ * no-hooks case without ever overriding a hook-driven state. See §5.2/§5.3,
+ * Epic 2 & 5, and §11 (status logic lives here, not in React).
  */
 export class SessionManager {
   private readonly sessions = new Map<string, Session>();
-  private readonly subs = new Map<string, Disposable[]>();
-  private readonly firstOutputSeen = new Set<string>();
+  private readonly internal = new Map<string, Internal>();
+  private readonly fallbackIdleMs: number;
 
   /** Fires on any change to the session list, config, or status. */
   readonly onChange = new Emitter<Session[]>();
   /** Fires whenever a single session's status transitions. */
   readonly onStatus = new Emitter<StatusChange>();
 
-  constructor(private readonly backend: PtyBackend) {}
+  constructor(
+    private readonly backend: PtyBackend,
+    options: SessionManagerOptions = {},
+  ) {
+    this.fallbackIdleMs = options.fallbackIdleMs ?? 1500;
+  }
 
-  /** Immutable snapshot of all sessions, in insertion order. */
   list(): Session[] {
     return [...this.sessions.values()].map((s) => ({
       config: { ...s.config },
@@ -60,35 +92,36 @@ export class SessionManager {
     return this.sessions.has(sessionId);
   }
 
-  /** Spawn a session and wire its backend lifecycle to the status machine. */
   async spawn(
     config: SessionConfig,
     dims: { cols: number; rows: number },
     extras: SpawnExtras = {},
   ): Promise<void> {
-    if (this.sessions.has(config.sessionId)) return;
+    const id = config.sessionId;
+    if (this.sessions.has(id)) return;
 
-    this.sessions.set(config.sessionId, {
-      config: { ...config },
-      status: 'spawning',
-    });
-    this.firstOutputSeen.delete(config.sessionId);
+    this.sessions.set(id, { config: { ...config }, status: 'spawning' });
+    const state: Internal = {
+      scanner: new OscStatusScanner(),
+      output: this.internal.get(id)?.output ?? new Emitter<string>(),
+      subs: [],
+      firstOutputSeen: false,
+      quietTimer: null,
+    };
+    this.internal.set(id, state);
 
-    const dataSub = this.backend.onData(config.sessionId, () => {
-      if (!this.firstOutputSeen.has(config.sessionId)) {
-        this.firstOutputSeen.add(config.sessionId);
-        this.dispatch(config.sessionId, { type: 'firstOutput' });
-      }
-    });
-    const exitSub = this.backend.onExit(config.sessionId, () => {
-      this.dispatch(config.sessionId, { type: 'exit' });
-    });
-    this.subs.set(config.sessionId, [dataSub, exitSub]);
+    state.subs.push(
+      this.backend.onData(id, (raw) => this.handleData(id, raw)),
+      this.backend.onExit(id, () => {
+        this.clearQuietTimer(id);
+        this.dispatch(id, { type: 'exit' });
+      }),
+    );
 
     this.emitChange();
 
     await this.backend.spawn({
-      sessionId: config.sessionId,
+      sessionId: id,
       cwd: config.cwd,
       cols: dims.cols,
       rows: dims.rows,
@@ -98,16 +131,23 @@ export class SessionManager {
     });
   }
 
-  /** Subscribe to raw PTY output for a session (UI writes this to xterm). */
+  /** Subscribe to a session's cleaned PTY output (OSC status bytes removed). */
   onData(sessionId: string, cb: (data: string) => void): Disposable {
-    return this.backend.onData(sessionId, cb);
+    return this.outputEmitter(sessionId).on(cb);
   }
 
   write(sessionId: string, data: string): void {
-    if (!this.sessions.has(sessionId)) return;
+    const state = this.internal.get(sessionId);
+    if (!state) return;
     this.backend.write(sessionId, data);
-    // NB: `submit` (running) detection from raw keystrokes is wired in M3
-    // alongside the OSC/hook layer to avoid false positives without hooks.
+    // A submitted prompt is the PRIMARY `running` signal (PRD §5.3) — it applies
+    // with or without hooks. The quiet timer armed here is a self-healing safety
+    // net; a Stop/Notification hook, when present, fires later, is authoritative,
+    // and cancels the timer.
+    if (/[\r\n]/.test(data)) {
+      this.dispatch(sessionId, { type: 'submit' });
+      this.armQuietTimer(sessionId);
+    }
   }
 
   resize(sessionId: string, cols: number, rows: number): void {
@@ -122,24 +162,29 @@ export class SessionManager {
     this.emitChange();
   }
 
-  /** Feed an authoritative hook status (from the OSC handler, M3). */
+  /** Feed an authoritative hook status. Disables the fallback heuristic. */
   applyHookStatus(sessionId: string, status: HookStatus): void {
+    // Hooks are authoritative; cancel any pending fallback transition.
+    this.clearQuietTimer(sessionId);
     this.dispatch(sessionId, { type: 'hook', status });
   }
 
-  /** Kill the PTY; the resulting onExit drives the session to `exited`. */
   kill(sessionId: string): void {
     if (!this.sessions.has(sessionId)) return;
     this.backend.kill(sessionId);
   }
 
-  /** Kill and forget a session, releasing its backend subscriptions. */
   remove(sessionId: string): void {
     if (!this.sessions.has(sessionId)) return;
     this.backend.kill(sessionId);
-    this.disposeSubs(sessionId);
+    const state = this.internal.get(sessionId);
+    if (state) {
+      this.clearQuietTimer(sessionId);
+      for (const d of state.subs) d.dispose();
+      state.output.clear();
+    }
+    this.internal.delete(sessionId);
     this.sessions.delete(sessionId);
-    this.firstOutputSeen.delete(sessionId);
     this.emitChange();
   }
 
@@ -147,6 +192,64 @@ export class SessionManager {
     for (const id of [...this.sessions.keys()]) this.remove(id);
     this.onChange.clear();
     this.onStatus.clear();
+  }
+
+  private handleData(sessionId: string, raw: string): void {
+    const state = this.internal.get(sessionId);
+    if (!state) return;
+
+    const { output, statuses } = state.scanner.push(raw);
+
+    if (!state.firstOutputSeen) {
+      state.firstOutputSeen = true;
+      this.dispatch(sessionId, { type: 'firstOutput' });
+    }
+    for (const status of statuses) this.applyHookStatus(sessionId, status);
+
+    if (output) state.output.emit(output);
+
+    // While `running`, continued output keeps it alive (resets the quiet timer).
+    if (state.quietTimer !== null) {
+      this.armQuietTimer(sessionId);
+    }
+  }
+
+  private outputEmitter(sessionId: string): Emitter<string> {
+    let state = this.internal.get(sessionId);
+    if (!state) {
+      // Allow subscribing before spawn; the emitter is carried into spawn().
+      const output = new Emitter<string>();
+      state = {
+        scanner: new OscStatusScanner(),
+        output,
+        subs: [],
+        firstOutputSeen: false,
+        quietTimer: null,
+      };
+      this.internal.set(sessionId, state);
+    }
+    return state.output;
+  }
+
+  private armQuietTimer(sessionId: string): void {
+    const state = this.internal.get(sessionId);
+    if (!state) return;
+    this.clearQuietTimer(sessionId);
+    state.quietTimer = timers.setTimeout(() => {
+      const s = this.internal.get(sessionId);
+      if (s) {
+        s.quietTimer = null;
+        this.dispatch(sessionId, { type: 'quiet' });
+      }
+    }, this.fallbackIdleMs);
+  }
+
+  private clearQuietTimer(sessionId: string): void {
+    const state = this.internal.get(sessionId);
+    if (state?.quietTimer != null) {
+      timers.clearTimeout(state.quietTimer);
+      state.quietTimer = null;
+    }
   }
 
   private dispatch(sessionId: string, event: StatusEvent): void {
@@ -157,11 +260,6 @@ export class SessionManager {
     s.status = next;
     this.onStatus.emit({ sessionId, status: next });
     this.emitChange();
-  }
-
-  private disposeSubs(sessionId: string): void {
-    for (const d of this.subs.get(sessionId) ?? []) d.dispose();
-    this.subs.delete(sessionId);
   }
 
   private emitChange(): void {

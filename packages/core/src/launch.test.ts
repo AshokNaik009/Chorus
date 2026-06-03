@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { shellLaunchArgs } from './launch';
+import { shellLaunchArgs, withClaudeHooks } from './launch';
 
 describe('shellLaunchArgs', () => {
   it('plain interactive shell -> no args (unix)', () => {
@@ -25,5 +25,25 @@ describe('shellLaunchArgs', () => {
 
   it('windows plain shell -> no args', () => {
     expect(shellLaunchArgs(undefined, true)).toEqual([]);
+  });
+});
+
+describe('withClaudeHooks', () => {
+  it('injects --settings for a claude command', () => {
+    expect(withClaudeHooks('claude', '/tmp/h.json')).toBe(
+      "claude --settings '/tmp/h.json'",
+    );
+  });
+
+  it('preserves extra claude args', () => {
+    expect(withClaudeHooks('claude --resume', '/tmp/h.json')).toBe(
+      "claude --settings '/tmp/h.json' --resume",
+    );
+  });
+
+  it('leaves non-claude commands and empty commands alone', () => {
+    expect(withClaudeHooks('bash', '/tmp/h.json')).toBe('bash');
+    expect(withClaudeHooks(undefined, '/tmp/h.json')).toBeUndefined();
+    expect(withClaudeHooks('claudette', '/tmp/h.json')).toBe('claudette');
   });
 });

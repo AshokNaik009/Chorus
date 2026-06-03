@@ -1,0 +1,21 @@
+appId: com.pane.app
+productName: Pane
+directories:
+  output: release
+  buildResources: build
+# Bundle the built output plus production deps (node-pty is pulled in
+# automatically). The native node-pty binary must live outside the asar so the
+# child process can exec it.
+files:
+  - out/**/*
+  - package.json
+asarUnpack:
+  - "**/node_modules/node-pty/**"
+mac:
+  target: dmg
+  category: public.app-category.developer-tools
+win:
+  target: nsis
+linux:
+  target: AppImage
+  category: Development

@@ -3,9 +3,34 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Electron host. Implemented in milestone M5 (Epic 7).",
+  "description": "Electron desktop host for Pane (PRD Epic 7 / M5).",
+  "main": "out/main/index.js",
   "scripts": {
-    "build": "node -e \"console.log('app-electron: host wiring lands in M5 (Epic 7)')\"",
-    "typecheck": "node -e \"process.exit(0)\""
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "rebuild": "electron-rebuild -f -w node-pty",
+    "dist": "electron-vite build && electron-builder",
+    "dist:dir": "electron-vite build && electron-builder --dir"
+  },
+  "dependencies": {
+    "@app/core": "*",
+    "@app/ui": "*",
+    "node-pty": "^1.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.0",
+    "@types/node": "^22.5.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "electron": "^42.0.0",
+    "electron-builder": "^26.0.0",
+    "electron-vite": "^5.0.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
   }
 }

@@ -1,0 +1,11 @@
+{
+  "name": "app-electron",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Electron host. Implemented in milestone M5 (Epic 7).",
+  "scripts": {
+    "build": "node -e \"console.log('app-electron: host wiring lands in M5 (Epic 7)')\"",
+    "typecheck": "node -e \"process.exit(0)\""
+  }
+}

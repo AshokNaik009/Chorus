@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Electron desktop host for Pane (PRD Epic 7 / M5).",
+  "description": "Electron desktop host for Chorus (PRD Epic 7 / M5).",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -17,6 +17,7 @@
   "dependencies": {
     "@app/core": "*",
     "@app/ui": "*",
+    "@app/voice": "*",
     "node-pty": "^1.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

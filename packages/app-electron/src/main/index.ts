@@ -44,7 +44,7 @@ function createWindow(): void {
     minWidth: 720,
     minHeight: 480,
     backgroundColor: '#0e1116',
-    title: 'Pane',
+    title: 'Chorus',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,

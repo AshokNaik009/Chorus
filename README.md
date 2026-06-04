@@ -1,10 +1,12 @@
-# Pane — Parallel Claude Code Terminal Manager
+# Chorus — Parallel Claude Code Terminal Manager
 
 Run multiple Claude Code sessions in parallel inside a single window: a
 resizable grid of terminal panes grouped into **workspaces**, a two-tier sidebar
 with live status badges, adjustable layouts, and pane maximize. Workspaces,
 layouts and sessions are **persisted** and restored on relaunch. A focused,
 open-source take on the BridgeSpace / cmux idea, scoped to Claude Code.
+
+![Chorus running three Claude Code sessions in a 1×3 layout, with the two-tier workspace sidebar, live status badges, and the Voice / Export / Import controls in the header](docs/chorus-screenshot.png)
 
 > Built bottom-up against a stable `PtyBackend` seam so the whole UI runs in a
 > browser dev harness *and* the Electron desktop app from the same `@app/ui` —

@@ -13,6 +13,18 @@ export { LayoutView } from './LayoutView.js';
 export { Sidebar } from './Sidebar.js';
 export { PaneLauncher } from './PaneLauncher.js';
 export { StatusBadge } from './StatusBadge.js';
+export { MemoryControls } from './MemoryControls.js';
+export type { MemoryControlsProps, ExportPayload } from './MemoryControls.js';
+export { downloadTextFile, pickTextFile } from './file-io.js';
+export {
+  useVoiceCapture,
+  useVoiceHotkey,
+  parseHotkey,
+  VoiceMicButton,
+  RecordingIndicator,
+  VoiceSettingsButton,
+} from './Voice.js';
+export type { VoiceStatus } from './Voice.js';
 export { darkTheme, xtermTheme } from './theme.js';
 
 // Re-exported so hosts can type their wiring against the same status union.

@@ -14,6 +14,7 @@
   "dependencies": {
     "@app/core": "*",
     "@app/ui": "*",
+    "@app/voice": "*",
     "node-pty": "^1.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

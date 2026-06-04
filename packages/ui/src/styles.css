@@ -43,6 +43,19 @@ body {
   }
 }
 
+/* Recording-indicator dot (voice dictation, Epic 9). */
+@keyframes chorus-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+
 /* allotment sash theming to match the dark theme */
 .allotment-module_splitView__L-yRc {
   --separator-border: var(--border);

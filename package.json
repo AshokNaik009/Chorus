@@ -1,8 +1,8 @@
 {
-  "name": "pane",
+  "name": "chorus",
   "version": "0.1.0",
   "private": true,
-  "description": "Parallel Claude Code Terminal Manager (codename: Pane)",
+  "description": "Chorus — Parallel Claude Code Terminal Manager",
   "type": "module",
   "packageManager": "npm@10.7.0",
   "workspaces": [

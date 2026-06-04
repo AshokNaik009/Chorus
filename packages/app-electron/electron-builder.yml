@@ -1,5 +1,5 @@
-appId: com.pane.app
-productName: Pane
+appId: com.chorus.app
+productName: Chorus
 directories:
   output: release
   buildResources: build

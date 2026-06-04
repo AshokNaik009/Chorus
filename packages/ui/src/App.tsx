@@ -2,25 +2,36 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   addWorkspace,
   buildTemplate,
+  buildWorkspaceBundle,
   collectSessionIds,
   countPanes,
   createWorkspace,
+  DEFAULT_VOICE_SETTINGS,
   defaultWorkspaceState,
   getActiveWorkspace,
+  reconcileImport,
   removePane,
   removeSessionConfig,
   removeWorkspace,
+  serializeBundle,
   setActiveWorkspace,
   setSizesAtPath,
   setWorkspaceLayout,
   updateWorkspace,
   upsertSession,
+  type ChorusBundle,
+  type ImportMode,
+  type ImportResult,
   type LayoutTemplate,
   type Persistence,
   type Session,
+  type SessionArchive,
   type SessionConfig,
   type SessionManager,
   type SessionStatus,
+  type Transcriber,
+  type TranscriberId,
+  type VoiceSettings,
   type Workspace,
   type WorkspaceState,
 } from '@app/core';
@@ -29,6 +40,14 @@ import { Sidebar } from './Sidebar.js';
 import { SessionTerminal } from './SessionTerminal.js';
 import { PaneLauncher } from './PaneLauncher.js';
 import { StatusBadge } from './StatusBadge.js';
+import { MemoryControls, type ExportPayload } from './MemoryControls.js';
+import {
+  RecordingIndicator,
+  useVoiceCapture,
+  useVoiceHotkey,
+  VoiceMicButton,
+  VoiceSettingsButton,
+} from './Voice.js';
 import type { TerminalPaneHandle } from './TerminalPane.js';
 
 export interface AppProps {
@@ -37,6 +56,18 @@ export interface AppProps {
   persistence: Persistence;
   /** Prefilled cwd for brand-new workspaces / panes. */
   defaultCwd?: string;
+  /**
+   * Layer-2 memory portability (PRD Epic 11). Present only on hosts that can
+   * reach `~/.claude` (Electron). When absent, only workspace-level (Layer 1)
+   * export/import is offered — the web harness degrades cleanly (US-11.6).
+   */
+  sessionArchive?: SessionArchive;
+  /**
+   * On-device transcription engines the host injects (PRD Epic 9). The UI probes
+   * `isAvailable()` and consumes only the `Transcriber` interface; an empty/absent
+   * list hides voice controls. Both hosts inject the WASM Whisper engine.
+   */
+  transcribers?: Transcriber[];
 }
 
 const TEMPLATES: LayoutTemplate[] = [1, 2, 3, 4, 6];
@@ -68,13 +99,19 @@ function findSession(
 }
 
 /**
- * The full Pane app: a two-tier workspace sidebar, a layout-template toolbar, a
+ * The full Chorus app: a two-tier workspace sidebar, a layout-template toolbar, a
  * resizable grid of Claude Code sessions, pane maximize, and persistence across
  * restarts. Host-agnostic — it receives a SessionManager (bound to a PtyBackend)
  * and a Persistence, and drives everything through them. See PRD Epics 3/4/6 and
  * the multi-workspace product decisions.
  */
-export function App({ manager, persistence, defaultCwd = '~' }: AppProps) {
+export function App({
+  manager,
+  persistence,
+  defaultCwd = '~',
+  sessionArchive,
+  transcribers,
+}: AppProps) {
   const [state, setState] = useState<WorkspaceState | null>(null);
   const [live, setLive] = useState<Session[]>([]);
   const [focusedId, setFocusedId] = useState<string | null>(null);
@@ -270,6 +307,102 @@ export function App({ manager, persistence, defaultCwd = '~' }: AppProps) {
     setFocusedId(sessionId);
   };
 
+  // ---- memory import/export (PRD Epic 11) ----
+
+  const exportSetup = useCallback(
+    async (
+      layer: 'workspace' | 'full',
+    ): Promise<ExportPayload | { error: string }> => {
+      if (!state) return { error: 'Nothing to export yet.' };
+      const stamp = new Date()
+        .toISOString()
+        .slice(0, 16)
+        .replace(/[:T]/g, '-');
+      if (layer === 'workspace' || !sessionArchive) {
+        const bundle = buildWorkspaceBundle(state);
+        return {
+          filename: `chorus-workspace-${stamp}.chorus`,
+          body: serializeBundle(bundle),
+        };
+      }
+      // Layer 2 (full, with conversations) is wired in M12.
+      return {
+        error: 'Full export with conversations arrives in the desktop M12 build.',
+      };
+    },
+    [state, sessionArchive],
+  );
+
+  const importSetup = useCallback(
+    async (bundle: ChorusBundle, mode: ImportMode): Promise<ImportResult> => {
+      const base = state ?? defaultWorkspaceState(defaultCwd);
+      // On replace, tear down every current live PTY before swapping state in.
+      if (mode === 'replace') {
+        for (const ws of base.workspaces) {
+          for (const s of ws.sessions) manager.remove(s.sessionId);
+        }
+        handles.current.clear();
+      }
+      const { state: next, result } = reconcileImport(base, bundle, mode);
+      // Layer-2 conversation restore (Electron) slots in here in M12, before the
+      // respawn below, so panes can relaunch with `--resume <id>`.
+      setState(next);
+      const active = getActiveWorkspace(next);
+      if (active) ensureSpawned(active);
+      setFocusedId(null);
+      setMaximizedId(null);
+      return result;
+    },
+    [state, manager, defaultCwd, ensureSpawned],
+  );
+
+  // ---- voice dictation (PRD Epic 9) ----
+
+  const engines = useMemo(() => transcribers ?? [], [transcribers]);
+  const [availableEngines, setAvailableEngines] = useState<Set<TranscriberId>>(
+    new Set(),
+  );
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all(
+      engines.map(async (t) => ((await t.isAvailable()) ? t.id : null)),
+    ).then((ids) => {
+      if (!cancelled) {
+        setAvailableEngines(new Set(ids.filter((x): x is TranscriberId => !!x)));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [engines]);
+
+  const voiceSettings: VoiceSettings = state?.settings?.voice ?? DEFAULT_VOICE_SETTINGS;
+  const setVoiceSettings = useCallback((next: VoiceSettings) => {
+    setState((prev) =>
+      prev ? { ...prev, settings: { ...prev.settings, voice: next } } : prev,
+    );
+  }, []);
+
+  const activeTranscriber = useMemo(() => {
+    const avail = engines.filter((t) => availableEngines.has(t.id));
+    return avail.find((t) => t.id === voiceSettings.engineId) ?? avail[0] ?? null;
+  }, [engines, availableEngines, voiceSettings.engineId]);
+
+  const writeToSession = useCallback(
+    (sid: string, data: string) => manager.write(sid, data),
+    [manager],
+  );
+  const focusedIsLive = focusedId != null && manager.has(focusedId);
+  const voice = useVoiceCapture({
+    transcriber: activeTranscriber,
+    mode: voiceSettings.mode,
+    focusedSessionId: focusedId,
+    canCapture: focusedIsLive,
+    write: writeToSession,
+  });
+  useVoiceHotkey(voiceSettings.hotkey, voice);
+  const voiceEnabled = engines.length > 0;
+
   // ---- rendering ----
 
   const renderPane = (sessionId: string) => {
@@ -425,7 +558,7 @@ export function App({ manager, persistence, defaultCwd = '~' }: AppProps) {
             borderBottom: '1px solid var(--border)',
           }}
         >
-          <strong style={{ color: 'var(--accent)' }}>Pane</strong>
+          <strong style={{ color: 'var(--accent)' }}>Chorus</strong>
           <span
             style={{
               color: 'var(--fg)',
@@ -465,24 +598,57 @@ export function App({ manager, persistence, defaultCwd = '~' }: AppProps) {
               );
             })}
           </div>
-          {maximizedId !== null && (
-            <button
-              onClick={() => setMaximizedId(null)}
-              title="Restore grid"
-              style={{
-                marginLeft: 'auto',
-                background: 'var(--bg)',
-                color: 'var(--fg)',
-                border: '1px solid var(--border)',
-                borderRadius: 6,
-                padding: '4px 12px',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
-            >
-              🗗 Restore
-            </button>
-          )}
+          <div
+            style={{
+              marginLeft: 'auto',
+              display: 'flex',
+              gap: 8,
+              alignItems: 'center',
+            }}
+          >
+            {maximizedId !== null && (
+              <button
+                onClick={() => setMaximizedId(null)}
+                title="Restore grid"
+                style={{
+                  background: 'var(--bg)',
+                  color: 'var(--fg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  padding: '4px 12px',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                🗗 Restore
+              </button>
+            )}
+            {voiceEnabled && (
+              <>
+                <VoiceMicButton
+                  status={voice.status}
+                  disabled={!activeTranscriber || !focusedIsLive}
+                  disabledReason={
+                    !activeTranscriber
+                      ? 'No voice engine available'
+                      : 'Focus a running session to dictate'
+                  }
+                  onToggle={voice.toggle}
+                />
+                <VoiceSettingsButton
+                  transcribers={engines}
+                  availableIds={availableEngines}
+                  settings={voiceSettings}
+                  onChange={setVoiceSettings}
+                />
+              </>
+            )}
+            <MemoryControls
+              onExport={exportSetup}
+              onImport={importSetup}
+              fullSupported={!!sessionArchive}
+            />
+          </div>
         </header>
 
         <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
@@ -497,6 +663,33 @@ export function App({ manager, persistence, defaultCwd = '~' }: AppProps) {
           )}
         </div>
       </div>
+
+      {voiceEnabled && (
+        <RecordingIndicator status={voice.status} onCancel={voice.cancel} />
+      )}
+      {voice.error && (
+        <div
+          onClick={voice.clearError}
+          role="alert"
+          style={{
+            position: 'fixed',
+            bottom: 16,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 61,
+            background: 'var(--status-waiting)',
+            color: '#1a1a1a',
+            border: '1px solid var(--border)',
+            borderRadius: 10,
+            padding: '8px 14px',
+            fontSize: 12,
+            cursor: 'pointer',
+            maxWidth: 420,
+          }}
+        >
+          {voice.error} · click to dismiss
+        </div>
+      )}
     </div>
   );
 }

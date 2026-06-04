@@ -25,6 +25,9 @@ export {
   VoiceSettingsButton,
 } from './Voice.js';
 export type { VoiceStatus } from './Voice.js';
+export { HelpButton } from './Tutorial.js';
+export { SwarmPanel } from './SwarmPanel.js';
+export type { SwarmPanelProps } from './SwarmPanel.js';
 export { darkTheme, xtermTheme } from './theme.js';
 
 // Re-exported so hosts can type their wiring against the same status union.

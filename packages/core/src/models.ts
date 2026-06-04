@@ -16,6 +16,12 @@ export interface SessionConfig {
   sessionId: string;
   title: string;
   cwd: string;
+  /**
+   * The Claude Code conversation id (NOT the pane `sessionId`), captured
+   * best-effort so the pane can resume its prior context after a Layer-2 import
+   * (PRD Epic 11). Absent until captured / on hosts without `~/.claude`.
+   */
+  claudeSessionId?: string;
 }
 
 /**

@@ -77,6 +77,16 @@ export function buildTemplate(
   }
 }
 
+/**
+ * Build a single-row layout of N panes from explicit ids (1 → a lone pane).
+ * Used by swarm fan-out, where N is the member count (PRD Epic 10), not a fixed
+ * template. Pure.
+ */
+export function buildRow(ids: string[]): LayoutNode {
+  if (ids.length === 0) throw new Error('buildRow needs at least one id');
+  return ids.length === 1 ? pane(ids[0]) : rowOf(ids);
+}
+
 /** Structural validation of an untrusted layout tree (for loading state). */
 export function isLayoutNode(value: unknown): value is LayoutNode {
   if (!value || typeof value !== 'object') return false;

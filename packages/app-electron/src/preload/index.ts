@@ -32,6 +32,14 @@ const api: PaneApi = {
   },
   loadState: () => ipcRenderer.invoke(IPC.loadState),
   saveState: (state) => ipcRenderer.invoke(IPC.saveState, state),
+  createBlackboard: (swarmId, baseCwd, doc) =>
+    ipcRenderer.invoke(IPC.createBlackboard, swarmId, baseCwd, doc),
+  captureSessionId: (paneSessionId, cwd) =>
+    ipcRenderer.invoke(IPC.captureSessionId, paneSessionId, cwd),
+  exportConversations: (items) =>
+    ipcRenderer.invoke(IPC.exportConversations, items),
+  importConversations: (refs) =>
+    ipcRenderer.invoke(IPC.importConversations, refs),
 };
 
 contextBridge.exposeInMainWorld('paneApi', api);

@@ -94,6 +94,24 @@ export interface SessionArchive {
   resumeArgs(sessionId: string): string[];
 }
 
+// ---- Layer 2 helpers (pure) ----
+
+/**
+ * Derive the `~/.claude/projects/<slug>/` directory name from an absolute project
+ * path. Claude Code slugifies the path by replacing every non-alphanumeric char
+ * with `-` (e.g. `/Users/a/my.proj` → `-Users-a-my-proj`). The exact rule is
+ * confirmed against a real `~/.claude` in VS-11.C (docs/memory-capabilities.md);
+ * keeping it here makes the remap unit-testable.
+ */
+export function claudeProjectSlug(absPath: string): string {
+  return absPath.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+/** argv to resume a conversation in a pane PTY (e.g. `claude --resume <id>`). */
+export function resumeArgs(claudeSessionId: string): string[] {
+  return ['--resume', claudeSessionId];
+}
+
 // ---- Layer 1: pure bundle build / (de)serialize ----
 
 /** Build a Layer-1 (workspace-only) bundle from the current state. */

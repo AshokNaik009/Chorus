@@ -1,24 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   addWorkspace,
+  broadcastTo,
+  buildBlackboardDoc,
+  buildRow,
   buildTemplate,
   buildWorkspaceBundle,
   collectSessionIds,
   countPanes,
+  createSessionId,
+  createSwarmId,
   createWorkspace,
   DEFAULT_VOICE_SETTINGS,
   defaultWorkspaceState,
   getActiveWorkspace,
+  planFanOut,
   reconcileImport,
   removePane,
   removeSessionConfig,
+  removeSwarm,
   removeWorkspace,
+  resumeArgs,
   serializeBundle,
   setActiveWorkspace,
   setSizesAtPath,
   setWorkspaceLayout,
+  SwarmOrchestrator,
   updateWorkspace,
   upsertSession,
+  upsertSwarm,
   type ChorusBundle,
   type ImportMode,
   type ImportResult,
@@ -29,6 +39,8 @@ import {
   type SessionConfig,
   type SessionManager,
   type SessionStatus,
+  type SwarmDef,
+  type SwarmWorkspace,
   type Transcriber,
   type TranscriberId,
   type VoiceSettings,
@@ -48,6 +60,8 @@ import {
   VoiceMicButton,
   VoiceSettingsButton,
 } from './Voice.js';
+import { HelpButton } from './Tutorial.js';
+import { SwarmPanel } from './SwarmPanel.js';
 import type { TerminalPaneHandle } from './TerminalPane.js';
 
 export interface AppProps {
@@ -68,6 +82,11 @@ export interface AppProps {
    * list hides voice controls. Both hosts inject the WASM Whisper engine.
    */
   transcribers?: Transcriber[];
+  /**
+   * Shared-blackboard host helper for swarms (PRD Epic 10). Electron writes real
+   * files; absent on web, where fan-out runs without a shared dir (US-10.4).
+   */
+  swarmWorkspace?: SwarmWorkspace;
 }
 
 const TEMPLATES: LayoutTemplate[] = [1, 2, 3, 4, 6];
@@ -111,6 +130,7 @@ export function App({
   defaultCwd = '~',
   sessionArchive,
   transcribers,
+  swarmWorkspace,
 }: AppProps) {
   const [state, setState] = useState<WorkspaceState | null>(null);
   const [live, setLive] = useState<Session[]>([]);
@@ -126,7 +146,12 @@ export function App({
     (ws: Workspace) => {
       for (const cfg of ws.sessions) {
         if (!manager.has(cfg.sessionId)) {
-          void manager.spawn(cfg, { cols: 80, rows: 24 }, { command: 'claude' });
+          // A pane with a captured Claude id (from a Layer-2 import) relaunches
+          // with `--resume` so it restores its prior conversation (PRD US-11.5).
+          const command = cfg.claudeSessionId
+            ? `claude ${resumeArgs(cfg.claudeSessionId).join(' ')}`
+            : 'claude';
+          void manager.spawn(cfg, { cols: 80, rows: 24 }, { command });
         }
       }
     },
@@ -198,13 +223,23 @@ export function App({
   const closeWorkspace = (id: string) => {
     if (!state) return;
     const ws = state.workspaces.find((w) => w.id === id);
-    if (ws) for (const s of ws.sessions) manager.remove(s.sessionId);
     const next = removeWorkspace(state, id);
+    // Update state FIRST so the removal always lands, then tear down PTYs — a
+    // throw in backend.kill can never strand the workspace in the sidebar.
     setState(next);
-    const nextActive = getActiveWorkspace(next);
-    if (nextActive) ensureSpawned(nextActive);
     setFocusedId(null);
     setMaximizedId(null);
+    if (ws) {
+      for (const s of ws.sessions) {
+        try {
+          manager.remove(s.sessionId);
+        } catch {
+          /* PTY already gone */
+        }
+      }
+    }
+    const nextActive = getActiveWorkspace(next);
+    if (nextActive) ensureSpawned(nextActive);
   };
 
   const renameWorkspace = (id: string, name: string) => {
@@ -256,17 +291,22 @@ export function App({
 
   const closeSession = (sessionId: string) => {
     if (!state) return;
-    manager.remove(sessionId);
-    handles.current.delete(sessionId);
     const found = findSession(state, sessionId);
     let next = removeSessionConfig(state, sessionId);
     if (found) {
       const layout = removePane(found.ws.layout, sessionId) ?? buildTemplate(1);
       next = setWorkspaceLayout(next, found.ws.id, layout);
     }
+    // State first so the row/pane always disappears, then kill the PTY.
     setState(next);
     setFocusedId((cur) => (cur === sessionId ? null : cur));
     setMaximizedId((cur) => (cur === sessionId ? null : cur));
+    handles.current.delete(sessionId);
+    try {
+      manager.remove(sessionId);
+    } catch {
+      /* PTY already gone */
+    }
   };
 
   const renameSession = (sessionId: string, title: string) => {
@@ -325,9 +365,35 @@ export function App({
           body: serializeBundle(bundle),
         };
       }
-      // Layer 2 (full, with conversations) is wired in M12.
+      // Layer 2 (full): capture any missing Claude ids, annotate + persist the
+      // state, then gather each pane's transcript via the SessionArchive.
+      const sa = sessionArchive;
+      const workspaces = await Promise.all(
+        state.workspaces.map(async (w) => ({
+          ...w,
+          sessions: await Promise.all(
+            w.sessions.map(async (s) => {
+              if (s.claudeSessionId) return s;
+              const cid = await sa.captureSessionId(s.sessionId, s.cwd);
+              return cid ? { ...s, claudeSessionId: cid } : s;
+            }),
+          ),
+        })),
+      );
+      const annotated: WorkspaceState = { ...state, workspaces };
+      setState(annotated); // persist the captured ids onto the session records
+      const items = workspaces
+        .flatMap((w) => w.sessions)
+        .filter((s) => s.claudeSessionId)
+        .map((s) => ({ sessionId: s.claudeSessionId as string, cwd: s.cwd }));
+      const conversations = await sa.exportConversations(items);
+      const bundle: ChorusBundle = {
+        ...buildWorkspaceBundle(annotated),
+        conversations,
+      };
       return {
-        error: 'Full export with conversations arrives in the desktop M12 build.',
+        filename: `chorus-full-${stamp}.chorus`,
+        body: serializeBundle(bundle),
       };
     },
     [state, sessionArchive],
@@ -344,16 +410,42 @@ export function App({
         handles.current.clear();
       }
       const { state: next, result } = reconcileImport(base, bundle, mode);
-      // Layer-2 conversation restore (Electron) slots in here in M12, before the
-      // respawn below, so panes can relaunch with `--resume <id>`.
+
+      // Layer-2: write transcripts under this machine's slug BEFORE respawning,
+      // so each pane's `--resume` finds its conversation. Identity remap for now
+      // (same path); cross-machine relocation is a documented follow-up (US-11.7).
+      let finalResult = result;
+      if (bundle.conversations && bundle.conversations.length > 0) {
+        if (sessionArchive) {
+          const r = await sessionArchive.importConversations(
+            bundle.conversations,
+            (p) => p,
+          );
+          finalResult = {
+            ...result,
+            conversationsImported: r.imported,
+            conversationsSkipped: r.skipped,
+            warnings: [...result.warnings, ...r.warnings],
+          };
+        } else {
+          finalResult = {
+            ...result,
+            warnings: [
+              ...result.warnings,
+              'This bundle has conversations, which need the desktop app to restore.',
+            ],
+          };
+        }
+      }
+
       setState(next);
       const active = getActiveWorkspace(next);
       if (active) ensureSpawned(active);
       setFocusedId(null);
       setMaximizedId(null);
-      return result;
+      return finalResult;
     },
-    [state, manager, defaultCwd, ensureSpawned],
+    [state, manager, defaultCwd, ensureSpawned, sessionArchive],
   );
 
   // ---- voice dictation (PRD Epic 9) ----
@@ -402,6 +494,122 @@ export function App({
   });
   useVoiceHotkey(voiceSettings.hotkey, voice);
   const voiceEnabled = engines.length > 0;
+
+  // ---- swarm (PRD Epic 10) ----
+
+  const [swarmOpen, setSwarmOpen] = useState(false);
+  const swarmWriter = useMemo(
+    () => ({ write: (id: string, d: string) => manager.write(id, d) }),
+    [manager],
+  );
+  const swarmLookup = useCallback(
+    (swarmId: string): SwarmDef | undefined => {
+      if (!state) return undefined;
+      for (const ws of state.workspaces) {
+        const s = ws.swarms?.find((x) => x.swarmId === swarmId);
+        if (s) return s;
+      }
+      return undefined;
+    },
+    [state],
+  );
+  const orchestrator = useMemo(
+    () => new SwarmOrchestrator(swarmWriter, swarmLookup),
+    [swarmWriter, swarmLookup],
+  );
+
+  const adHocBroadcast = useCallback(
+    (sessionIds: string[], text: string, submit: boolean) =>
+      broadcastTo(swarmWriter, sessionIds, text, submit),
+    [swarmWriter],
+  );
+
+  const createSwarm = useCallback(
+    (name: string, task: string, members: { sessionId: string; role?: string }[]) => {
+      if (!state || !active) return;
+      const def: SwarmDef = {
+        swarmId: createSwarmId(),
+        workspaceId: active.id,
+        name,
+        task: task.trim() || undefined,
+        members,
+      };
+      setState(upsertSwarm(state, active.id, def));
+    },
+    [state, active],
+  );
+
+  const removeSwarmById = useCallback(
+    (swarmId: string) => {
+      if (!state || !active) return;
+      setState(removeSwarm(state, active.id, swarmId));
+    },
+    [state, active],
+  );
+
+  const fanOut = useCallback(
+    async (name: string, task: string, roles: string[]) => {
+      if (!state || !active) return;
+      const ids = roles.map(() => createSessionId());
+      const members = ids.map((id, i) => ({ sessionId: id, role: roles[i] || undefined }));
+      const swarmId = createSwarmId();
+      let def: SwarmDef = {
+        swarmId,
+        workspaceId: active.id,
+        name,
+        task: task.trim() || undefined,
+        members,
+      };
+
+      // Tear down the current sessions in this workspace before re-laying it out.
+      for (const s of active.sessions) {
+        try {
+          manager.remove(s.sessionId);
+        } catch {
+          /* already gone */
+        }
+      }
+      handles.current.clear();
+
+      // Create the shared blackboard if the host supports it (Electron).
+      let sharedDir: string | null = null;
+      if (swarmWorkspace?.available) {
+        sharedDir = await swarmWorkspace.createBlackboard(
+          swarmId,
+          active.defaultCwd,
+          buildBlackboardDoc(def),
+        );
+        if (sharedDir) def = { ...def, sharedDir };
+      }
+
+      const configs: SessionConfig[] = members.map((m) => ({
+        sessionId: m.sessionId,
+        title: `${m.role ?? 'agent'} · ${name}`,
+        cwd: active.defaultCwd,
+      }));
+      let next = updateWorkspace(state, active.id, {
+        layout: buildRow(ids),
+        sessions: configs,
+      });
+      next = upsertSwarm(next, active.id, def);
+      setState(next);
+      setFocusedId(ids[0] ?? null);
+      setMaximizedId(null);
+
+      // Spawn each member, then seed it (insert; the user reviews and sends).
+      for (const cfg of configs) {
+        await manager.spawn(cfg, { cols: 80, rows: 24 }, { command: 'claude' });
+      }
+      const plan = planFanOut(def, sharedDir);
+      // Give the Claude TUIs a beat to render before typing the seed in.
+      window.setTimeout(() => {
+        for (const p of plan) {
+          if (manager.has(p.sessionId)) manager.write(p.sessionId, p.seed);
+        }
+      }, 1500);
+    },
+    [state, active, manager, swarmWorkspace],
+  );
 
   // ---- rendering ----
 
@@ -623,6 +831,22 @@ export function App({
                 🗗 Restore
               </button>
             )}
+            <HelpButton />
+            <button
+              onClick={() => setSwarmOpen(true)}
+              title="Coordinate several sessions on one task"
+              style={{
+                background: 'var(--bg)',
+                color: 'var(--fg)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                padding: '4px 10px',
+                cursor: 'pointer',
+                fontSize: 12,
+              }}
+            >
+              ⚇ Swarm
+            </button>
             {voiceEnabled && (
               <>
                 <VoiceMicButton
@@ -663,6 +887,24 @@ export function App({
           )}
         </div>
       </div>
+
+      {swarmOpen && active && (
+        <SwarmPanel
+          workspace={active}
+          statusOf={statusOf}
+          sharedDirAvailable={!!swarmWorkspace?.available}
+          onClose={() => setSwarmOpen(false)}
+          onBroadcast={adHocBroadcast}
+          onCreateSwarm={createSwarm}
+          onRemoveSwarm={removeSwarmById}
+          onSwarmBroadcast={(id, text, submit) =>
+            orchestrator.broadcast(id, text, { submit })
+          }
+          onSwarmStopAll={(id) => orchestrator.stopAll(id)}
+          onFanOut={fanOut}
+          onFocusSession={focusSession}
+        />
+      )}
 
       {voiceEnabled && (
         <RecordingIndicator status={voice.status} onCancel={voice.cancel} />

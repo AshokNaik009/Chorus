@@ -4,7 +4,12 @@
  * the three sides in lockstep. Mirrors app-web's `protocol.ts` (the websocket
  * wire format) — the difference is only the transport.
  */
-import type { SpawnOptions, WorkspaceState } from '@app/core';
+import type {
+  ConversationRef,
+  ImportConversationsResult,
+  SpawnOptions,
+  WorkspaceState,
+} from '@app/core';
 
 /** Channel names. Renderer->main are invoke/send; main->renderer are sends. */
 export const IPC = {
@@ -16,6 +21,10 @@ export const IPC = {
   exit: 'pane:pty-exit',
   loadState: 'pane:load-state',
   saveState: 'pane:save-state',
+  createBlackboard: 'pane:create-blackboard',
+  captureSessionId: 'pane:capture-session-id',
+  exportConversations: 'pane:export-conversations',
+  importConversations: 'pane:import-conversations',
 } as const;
 
 /** Payload for `pane:pty-data` / `pane:pty-exit` (keyed by session). */
@@ -46,4 +55,20 @@ export interface PaneApi {
   onExit(cb: (e: PtyExitEvent) => void): () => void;
   loadState(): Promise<WorkspaceState | null>;
   saveState(state: WorkspaceState): Promise<void>;
+  /**
+   * Create a swarm blackboard directory under `baseCwd` and write
+   * `CHORUS_SWARM.md` into it. Returns the absolute dir, or null on failure.
+   */
+  createBlackboard(
+    swarmId: string,
+    baseCwd: string,
+    doc: string,
+  ): Promise<string | null>;
+  /** Layer-2 (PRD Epic 11) — all touch `~/.claude`, so they live in main. */
+  captureSessionId(paneSessionId: string, cwd: string): Promise<string | null>;
+  exportConversations(
+    items: { sessionId: string; cwd: string }[],
+  ): Promise<ConversationRef[]>;
+  /** `refs` already have their project paths remapped for this machine. */
+  importConversations(refs: ConversationRef[]): Promise<ImportConversationsResult>;
 }

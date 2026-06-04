@@ -173,7 +173,8 @@ function isSessionConfig(v: unknown): v is SessionConfig {
   return (
     typeof c.sessionId === 'string' &&
     typeof c.title === 'string' &&
-    typeof c.cwd === 'string'
+    typeof c.cwd === 'string' &&
+    (c.claudeSessionId === undefined || typeof c.claudeSessionId === 'string')
   );
 }
 

@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   BUNDLE_VERSION,
   buildWorkspaceBundle,
+  claudeProjectSlug,
   parseBundle,
   reconcileImport,
   remapWorkspaceIds,
+  resumeArgs,
   serializeBundle,
   type ChorusBundle,
 } from './bundle.js';
@@ -142,6 +144,29 @@ describe('reconcileImport — merge', () => {
     const { state } = reconcileImport(current, bundle, 'merge');
     const titles = state.workspaces[1].sessions.map((s) => s.title).sort();
     expect(titles).toEqual(['left', 'right']);
+  });
+});
+
+describe('claudeProjectSlug (Layer-2 path remap)', () => {
+  it('replaces every non-alphanumeric char with a dash', () => {
+    expect(claudeProjectSlug('/Users/ashoknaik/claude-experiments/tui-bridgespaceclone')).toBe(
+      '-Users-ashoknaik-claude-experiments-tui-bridgespaceclone',
+    );
+  });
+  it('slugifies dots too', () => {
+    expect(claudeProjectSlug('/home/u/my.proj')).toBe('-home-u-my-proj');
+  });
+  it('remaps to a different machine slug', () => {
+    const orig = '/Users/alice/work/app';
+    const local = '/home/bob/app';
+    expect(claudeProjectSlug(orig)).not.toBe(claudeProjectSlug(local));
+    expect(claudeProjectSlug(local)).toBe('-home-bob-app');
+  });
+});
+
+describe('resumeArgs', () => {
+  it('builds the --resume argv', () => {
+    expect(resumeArgs('abc-123')).toEqual(['--resume', 'abc-123']);
   });
 });
 

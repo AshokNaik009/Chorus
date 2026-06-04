@@ -124,9 +124,18 @@ in the app's `userData` directory.
 | **M3** | 5 | Live status badges via Claude Code hooks → OSC | ✅ |
 | **M4** | 6 | Multi-workspace model, 1×3 / 2×3 layouts, maximize, persistence + restore | ✅ |
 | **M5** | 7 | Installable Electron app (main: node-pty over IPC; renderer: `@app/ui`) | ✅ |
+| **M11** | 11 | Workspace export/import — portable `.chorus` bundle (both hosts) | ✅ |
+| **M9** | 9 | Voice dictation into the focused pane (on-device WASM Whisper) | ✅ |
+| **M10** | 10 | Agent swarm — broadcast, fan-out, shared blackboard, swarm view | ✅ |
+| **M12** | 11 | Conversation/memory export/import + resume (Electron, Layer 2) | ✅\* |
+
+> \* M12 is code-complete and builds; the `~/.claude` resume round-trip needs
+> on-machine confirmation (see `docs/memory-capabilities.md`).
 
 > Beyond the PRD v1: the multi-workspace model, the two-tier sidebar, the 1×3 /
-> 2×3 layouts, pane maximize, and session naming are agreed extensions.
+> 2×3 layouts, pane maximize, and session naming are agreed extensions. **Chorus
+> v2** adds voice dictation (Epic 9), agent swarms (Epic 10), and portable session
+> memory (Epic 11) — all on-device / local, no cloud STT.
 
 ## Notes
 

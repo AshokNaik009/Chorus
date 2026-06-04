@@ -1,0 +1,408 @@
+import { useState } from 'react';
+import type { SessionStatus, Workspace } from '@app/core';
+import { StatusBadge } from './StatusBadge.js';
+
+export interface SwarmPanelProps {
+  workspace: Workspace;
+  statusOf: (sessionId: string) => SessionStatus | null;
+  /** True when a real shared blackboard dir can be created (Electron). */
+  sharedDirAvailable: boolean;
+  onClose: () => void;
+  onBroadcast: (sessionIds: string[], text: string, submit: boolean) => void;
+  onCreateSwarm: (
+    name: string,
+    task: string,
+    members: { sessionId: string; role?: string }[],
+  ) => void;
+  onRemoveSwarm: (swarmId: string) => void;
+  onSwarmBroadcast: (swarmId: string, text: string, submit: boolean) => void;
+  onSwarmStopAll: (swarmId: string) => void;
+  onFanOut: (name: string, task: string, roles: string[]) => void;
+  onFocusSession: (sessionId: string) => void;
+}
+
+const box: React.CSSProperties = {
+  background: 'var(--bg)',
+  border: '1px solid var(--border)',
+  borderRadius: 10,
+  padding: 14,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 10,
+};
+const input: React.CSSProperties = {
+  background: 'var(--bg-elevated)',
+  color: 'var(--fg)',
+  border: '1px solid var(--border)',
+  borderRadius: 6,
+  padding: '6px 8px',
+  fontFamily: 'inherit',
+  fontSize: 12,
+};
+const primary: React.CSSProperties = {
+  background: 'var(--accent)',
+  color: '#0e1116',
+  border: 'none',
+  borderRadius: 6,
+  padding: '7px 12px',
+  cursor: 'pointer',
+  fontWeight: 600,
+  fontSize: 12,
+};
+const ghost: React.CSSProperties = {
+  background: 'var(--bg-elevated)',
+  color: 'var(--fg)',
+  border: '1px solid var(--border)',
+  borderRadius: 6,
+  padding: '7px 12px',
+  cursor: 'pointer',
+  fontSize: 12,
+};
+const sectionTitle: React.CSSProperties = { fontWeight: 700, fontSize: 13 };
+const muted: React.CSSProperties = { color: 'var(--fg-muted)', fontSize: 11.5, lineHeight: 1.5 };
+
+/**
+ * Swarm console (PRD Epic 10): ad-hoc broadcast to selected sessions, fan-out a
+ * task into role-seeded panes, and group controls for saved swarms (send-all /
+ * stop-all / focus, with the waiting attention cue). Opens as a right-side drawer.
+ */
+export function SwarmPanel(props: SwarmPanelProps) {
+  const sessions = props.workspace.sessions;
+  const swarms = props.workspace.swarms ?? [];
+
+  // ad-hoc broadcast
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [castText, setCastText] = useState('');
+  const [castSubmit, setCastSubmit] = useState(true);
+  const toggleSel = (id: string) =>
+    setSelected((p) => {
+      const n = new Set(p);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+
+  // create-from-selected
+  const [swarmName, setSwarmName] = useState('');
+  const [swarmTask, setSwarmTask] = useState('');
+  const [roleById, setRoleById] = useState<Record<string, string>>({});
+
+  // fan-out
+  const [foName, setFoName] = useState('');
+  const [foTask, setFoTask] = useState('');
+  const [foRoles, setFoRoles] = useState<string[]>(['frontend', 'backend', 'tests']);
+
+  return (
+    <div
+      onClick={props.onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 55,
+        background: 'rgba(0,0,0,0.5)',
+        display: 'flex',
+        justifyContent: 'flex-end',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 480,
+          maxWidth: '94%',
+          height: '100%',
+          overflowY: 'auto',
+          background: 'var(--bg-elevated)',
+          borderLeft: '1px solid var(--border)',
+          padding: 18,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 16,
+          color: 'var(--fg)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <strong style={{ fontSize: 15 }}>⚇ Swarm · {props.workspace.name}</strong>
+          <button onClick={props.onClose} style={{ ...ghost, padding: '4px 10px' }}>
+            Close
+          </button>
+        </div>
+
+        {/* Broadcast */}
+        <div style={box}>
+          <div style={sectionTitle}>Broadcast</div>
+          <div style={muted}>
+            Send one prompt to several sessions at once.{' '}
+            <strong style={{ color: 'var(--status-waiting)' }}>
+              {selected.size} session(s) = {selected.size} independent run(s).
+            </strong>
+          </div>
+          {sessions.length === 0 ? (
+            <div style={muted}>No started sessions in this workspace yet.</div>
+          ) : (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {sessions.map((s) => {
+                const on = selected.has(s.sessionId);
+                return (
+                  <button
+                    key={s.sessionId}
+                    onClick={() => toggleSel(s.sessionId)}
+                    style={{
+                      ...ghost,
+                      padding: '4px 8px',
+                      borderColor: on ? 'var(--accent)' : 'var(--border)',
+                      background: on
+                        ? 'color-mix(in srgb, var(--accent) 16%, transparent)'
+                        : 'var(--bg-elevated)',
+                    }}
+                  >
+                    {on ? '☑ ' : '☐ '}
+                    {s.title}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <textarea
+            value={castText}
+            onChange={(e) => setCastText(e.target.value)}
+            placeholder="Ask all selected sessions the same thing…"
+            rows={2}
+            style={{ ...input, resize: 'vertical' }}
+          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <label style={{ ...muted, display: 'flex', gap: 6, alignItems: 'center' }}>
+              <input
+                type="checkbox"
+                checked={castSubmit}
+                onChange={(e) => setCastSubmit(e.target.checked)}
+              />
+              Submit (send Enter)
+            </label>
+            <button
+              style={{ ...primary, marginLeft: 'auto' }}
+              disabled={selected.size === 0 || !castText.trim()}
+              onClick={() => {
+                props.onBroadcast([...selected], castText, castSubmit);
+                setCastText('');
+              }}
+            >
+              Send to {selected.size}
+            </button>
+            <button
+              style={ghost}
+              disabled={selected.size === 0 || !swarmName.trim()}
+              title="Group the selected sessions into a saved swarm"
+              onClick={() => {
+                props.onCreateSwarm(
+                  swarmName,
+                  swarmTask,
+                  [...selected].map((id) => ({ sessionId: id, role: roleById[id]?.trim() || undefined })),
+                );
+                setSelected(new Set());
+                setSwarmName('');
+                setSwarmTask('');
+              }}
+            >
+              Save as swarm
+            </button>
+          </div>
+          <input
+            value={swarmName}
+            onChange={(e) => setSwarmName(e.target.value)}
+            placeholder="swarm name (to save the selection)"
+            style={input}
+          />
+          <input
+            value={swarmTask}
+            onChange={(e) => setSwarmTask(e.target.value)}
+            placeholder="shared task (optional)"
+            style={input}
+          />
+          {selected.size > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {[...selected].map((id) => {
+                const s = sessions.find((x) => x.sessionId === id);
+                return (
+                  <div key={id} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{ ...muted, width: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {s?.title ?? id}
+                    </span>
+                    <input
+                      value={roleById[id] ?? ''}
+                      onChange={(e) => setRoleById((p) => ({ ...p, [id]: e.target.value }))}
+                      placeholder="role (e.g. backend)"
+                      style={{ ...input, flex: 1 }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Fan-out */}
+        <div style={box}>
+          <div style={sectionTitle}>Fan out a task</div>
+          <div style={muted}>
+            Spawn one role-seeded pane per role and seed each with the task, its role
+            {props.sharedDirAvailable
+              ? ', and a shared blackboard file the agents coordinate through.'
+              : '. (A shared blackboard needs the desktop app — here the agents coordinate via you.)'}
+            {' '}This replaces the current workspace layout.
+          </div>
+          <input value={foName} onChange={(e) => setFoName(e.target.value)} placeholder="swarm name" style={input} />
+          <textarea
+            value={foTask}
+            onChange={(e) => setFoTask(e.target.value)}
+            placeholder="the shared objective"
+            rows={2}
+            style={{ ...input, resize: 'vertical' }}
+          />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {foRoles.map((r, i) => (
+              <div key={i} style={{ display: 'flex', gap: 6 }}>
+                <input
+                  value={r}
+                  onChange={(e) =>
+                    setFoRoles((p) => p.map((x, j) => (j === i ? e.target.value : x)))
+                  }
+                  placeholder={`role ${i + 1}`}
+                  style={{ ...input, flex: 1 }}
+                />
+                <button
+                  style={{ ...ghost, padding: '4px 10px' }}
+                  onClick={() => setFoRoles((p) => p.filter((_, j) => j !== i))}
+                  disabled={foRoles.length <= 1}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              style={ghost}
+              onClick={() => setFoRoles((p) => (p.length >= 6 ? p : [...p, '']))}
+              disabled={foRoles.length >= 6}
+              title="Up to 6 agents"
+            >
+              + role
+            </button>
+            <button
+              style={{ ...primary, marginLeft: 'auto' }}
+              disabled={!foName.trim() || foRoles.filter((r) => r.trim()).length === 0}
+              onClick={() => {
+                const roles = foRoles.map((r) => r.trim()).filter(Boolean);
+                props.onFanOut(foName.trim(), foTask.trim(), roles);
+                props.onClose();
+              }}
+            >
+              Fan out {foRoles.filter((r) => r.trim()).length} agents
+            </button>
+          </div>
+        </div>
+
+        {/* Saved swarms */}
+        <div style={box}>
+          <div style={sectionTitle}>Swarms · {swarms.length}</div>
+          {swarms.length === 0 ? (
+            <div style={muted}>No swarms yet. Save a selection or fan out a task above.</div>
+          ) : (
+            swarms.map((sw) => (
+              <SavedSwarm
+                key={sw.swarmId}
+                swarm={sw}
+                statusOf={props.statusOf}
+                onRemove={() => props.onRemoveSwarm(sw.swarmId)}
+                onSend={(text, submit) => props.onSwarmBroadcast(sw.swarmId, text, submit)}
+                onStopAll={() => props.onSwarmStopAll(sw.swarmId)}
+                onFocus={props.onFocusSession}
+              />
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SavedSwarm({
+  swarm,
+  statusOf,
+  onRemove,
+  onSend,
+  onStopAll,
+  onFocus,
+}: {
+  swarm: import('@app/core').SwarmDef;
+  statusOf: (id: string) => SessionStatus | null;
+  onRemove: () => void;
+  onSend: (text: string, submit: boolean) => void;
+  onStopAll: () => void;
+  onFocus: (id: string) => void;
+}) {
+  const [text, setText] = useState('');
+  return (
+    <div style={{ ...box, background: 'var(--bg-elevated)', padding: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <strong style={{ fontSize: 12.5 }}>{swarm.name}</strong>
+        <span style={{ ...muted, flex: 1 }}>{swarm.task ?? ''}</span>
+        <button style={{ ...ghost, padding: '3px 8px' }} onClick={onStopAll} title="Ctrl-C all members">
+          Stop all
+        </button>
+        <button style={{ ...ghost, padding: '3px 8px' }} onClick={onRemove} title="Forget this swarm">
+          ×
+        </button>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {swarm.members.map((m) => {
+          const st = statusOf(m.sessionId);
+          const waiting = st === 'waiting';
+          return (
+            <div
+              key={m.sessionId}
+              onClick={() => onFocus(m.sessionId)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '4px 6px',
+                borderRadius: 6,
+                cursor: 'pointer',
+                background: waiting
+                  ? 'color-mix(in srgb, var(--status-waiting) 14%, transparent)'
+                  : 'transparent',
+              }}
+            >
+              <span style={{ ...muted, width: 90, color: 'var(--fg)' }}>{m.role ?? 'agent'}</span>
+              {st ? <StatusBadge status={st} pulse={waiting} /> : <span style={muted}>not live</span>}
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="send to all members…"
+          style={{ ...input, flex: 1 }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && text.trim()) {
+              onSend(text, true);
+              setText('');
+            }
+          }}
+        />
+        <button
+          style={primary}
+          disabled={!text.trim()}
+          onClick={() => {
+            onSend(text, true);
+            setText('');
+          }}
+        >
+          Send to all
+        </button>
+      </div>
+    </div>
+  );
+}

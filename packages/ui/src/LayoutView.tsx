@@ -33,8 +33,19 @@ export function LayoutView({
     return <>{renderPane(node.sessionId)}</>;
   }
 
+  // Key the Allotment by its structure (direction + child identities), NOT its
+  // sizes. Allotment cannot reconcile a changed pane count in place — switching
+  // layout templates (e.g. 1×2 → 1×3) makes it loop in componentDidUpdate
+  // ("Maximum update depth exceeded"). A structure key remounts it cleanly on a
+  // template change, while sash drags (same structure) keep the same key and
+  // don't remount.
+  const structureKey = `${node.direction}|${node.children
+    .map((child, i) => childKey(child, i, path))
+    .join(',')}`;
+
   return (
     <Allotment
+      key={structureKey}
       vertical={node.direction === 'column'}
       defaultSizes={node.sizes}
       onChange={(sizes) => onSizes(path, sizes)}

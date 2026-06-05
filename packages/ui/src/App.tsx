@@ -14,6 +14,7 @@ import {
   DEFAULT_VOICE_SETTINGS,
   defaultWorkspaceState,
   getActiveWorkspace,
+  isReadyToSubmit,
   planFanOut,
   reconcileImport,
   removePane,
@@ -29,9 +30,11 @@ import {
   updateWorkspace,
   upsertSession,
   upsertSwarm,
+  workersReleaseVerifier,
   type ChorusBundle,
   type ImportMode,
   type ImportResult,
+  type LayoutNode,
   type LayoutTemplate,
   type Persistence,
   type Session,
@@ -62,6 +65,7 @@ import {
 } from './Voice.js';
 import { HelpButton } from './Tutorial.js';
 import { SwarmPanel } from './SwarmPanel.js';
+import { ErrorBoundary } from './ErrorBoundary.js';
 import type { TerminalPaneHandle } from './TerminalPane.js';
 
 export interface AppProps {
@@ -309,6 +313,31 @@ export function App({
     }
   };
 
+  // Close a single grid pane (the pane header ×). Removes it from the layout
+  // whether or not a session was started in it, drops any config, and kills the
+  // PTY. Differs from closeSession (sidebar) by always operating on the active
+  // workspace layout, so empty launcher panes can be closed too.
+  const closePane = (sessionId: string) => {
+    if (!state || !active) return;
+    const layout = removePane(active.layout, sessionId) ?? buildTemplate(1);
+    let next = removeSessionConfig(state, sessionId);
+    next = setWorkspaceLayout(next, active.id, layout);
+    setState(next);
+    setFocusedId((cur) => (cur === sessionId ? null : cur));
+    setMaximizedId((cur) => (cur === sessionId ? null : cur));
+    handles.current.delete(sessionId);
+    try {
+      manager.remove(sessionId);
+    } catch {
+      /* PTY already gone */
+    }
+  };
+
+  // Reset the active workspace to a clean single pane (recovery from a broken
+  // layout/view). Tears down this workspace's sessions, like selecting the
+  // 1-pane template.
+  const resetView = () => selectTemplate(1);
+
   const renameSession = (sessionId: string, title: string) => {
     if (!state) return;
     manager.rename(sessionId, title);
@@ -333,11 +362,30 @@ export function App({
 
   const onSizes = (path: number[], sizes: number[]) => {
     if (!state || !active) return;
+    // Allotment reports sizes in PIXELS; we store them as PERCENTAGES. Normalize
+    // before comparing/writing, otherwise the units never match, every onChange
+    // writes a new layout, and that re-fires onChange → infinite update loop
+    // ("Maximum update depth exceeded") — fatal during a fan-out where spawning
+    // panes resize continuously. Skip changes that are proportionally a no-op.
+    const total = sizes.reduce((a, b) => a + b, 0) || 1;
+    const norm = sizes.map((s) => (s / total) * 100);
+    let node: LayoutNode | undefined = active.layout;
+    for (const i of path) {
+      node = node && node.type === 'split' ? node.children[i] : undefined;
+    }
+    const current = node && node.type === 'split' ? node.sizes : null;
+    if (
+      current &&
+      current.length === norm.length &&
+      current.every((v, i) => Math.abs(v - norm[i]) < 0.5)
+    ) {
+      return;
+    }
     setState(
       setWorkspaceLayout(
         state,
         active.id,
-        setSizesAtPath(active.layout, path, sizes),
+        setSizesAtPath(active.layout, path, norm),
       ),
     );
   };
@@ -498,6 +546,18 @@ export function App({
   // ---- swarm (PRD Epic 10) ----
 
   const [swarmOpen, setSwarmOpen] = useState(false);
+  // In-flight fan-out. Workers are seeded on a short timer (the Claude TUI needs
+  // a beat to render before it accepts a typed prompt). The verifier is held and
+  // released by the effect below once every worker has run and gone idle.
+  const pendingFanOut = useRef<{
+    workerIds: string[];
+    verifier: { sessionId: string; seed: string } | null;
+    autoStart: boolean;
+  } | null>(null);
+  const seededIds = useRef<Set<string>>(new Set());
+  const workerHasRun = useRef<Set<string>>(new Set());
+  /** Delay before typing seeds, so the Claude TUI's input is ready. */
+  const SEED_DELAY_MS = 1800;
   const swarmWriter = useMemo(
     () => ({ write: (id: string, d: string) => manager.write(id, d) }),
     [manager],
@@ -548,10 +608,50 @@ export function App({
   );
 
   const fanOut = useCallback(
-    async (name: string, task: string, roles: string[]) => {
-      if (!state || !active) return;
-      const ids = roles.map(() => createSessionId());
-      const members = ids.map((id, i) => ({ sessionId: id, role: roles[i] || undefined }));
+    async (
+      name: string,
+      task: string,
+      workers: { role: string; task: string }[],
+      verifier: { task: string } | null,
+      autoStart: boolean,
+      dir: string,
+    ) => {
+      console.log('[chorus:fanout] called', {
+        name,
+        workers,
+        verifier,
+        autoStart,
+        hasState: !!state,
+        hasActive: !!active,
+      });
+      if (!state || !active) {
+        console.warn('[chorus:fanout] aborted — no state/active workspace');
+        return;
+      }
+      // The user picks the working directory the agents run in (required).
+      const cwd = dir.trim() || active.defaultCwd;
+      // Seeds are typed into the TUI, so collapse any newlines (a newline would
+      // submit the prompt mid-sentence).
+      const oneLine = (s: string) => s.replace(/\s*\n\s*/g, ' ').trim();
+      const workerMembers = workers.map((w) => ({
+        sessionId: createSessionId(),
+        role: w.role.trim() || undefined,
+        task: oneLine(w.task) || undefined,
+        gated: false,
+      }));
+      const verifierMember = verifier
+        ? {
+            sessionId: createSessionId(),
+            role: 'verifier',
+            // The (possibly edited) verifier prompt is stored as a full override.
+            seedPrompt: oneLine(verifier.task) || undefined,
+            gated: true,
+          }
+        : null;
+      const members = verifierMember
+        ? [...workerMembers, verifierMember]
+        : workerMembers;
+      const ids = members.map((m) => m.sessionId);
       const swarmId = createSwarmId();
       let def: SwarmDef = {
         swarmId,
@@ -576,7 +676,7 @@ export function App({
       if (swarmWorkspace?.available) {
         sharedDir = await swarmWorkspace.createBlackboard(
           swarmId,
-          active.defaultCwd,
+          cwd,
           buildBlackboardDoc(def),
         );
         if (sharedDir) def = { ...def, sharedDir };
@@ -585,7 +685,7 @@ export function App({
       const configs: SessionConfig[] = members.map((m) => ({
         sessionId: m.sessionId,
         title: `${m.role ?? 'agent'} · ${name}`,
-        cwd: active.defaultCwd,
+        cwd,
       }));
       let next = updateWorkspace(state, active.id, {
         layout: buildRow(ids),
@@ -596,20 +696,91 @@ export function App({
       setFocusedId(ids[0] ?? null);
       setMaximizedId(null);
 
-      // Spawn each member, then seed it (insert; the user reviews and sends).
-      for (const cfg of configs) {
-        await manager.spawn(cfg, { cols: 80, rows: 24 }, { command: 'claude' });
-      }
       const plan = planFanOut(def, sharedDir);
-      // Give the Claude TUIs a beat to render before typing the seed in.
+      const workerPlan = plan.filter((p) => !p.gated);
+      const v = plan.find((p) => p.gated) ?? null;
+      seededIds.current = new Set();
+      workerHasRun.current = new Set();
+      // Arm the verifier gate (driven by the status effect below).
+      pendingFanOut.current = {
+        workerIds: workerPlan.map((p) => p.sessionId),
+        verifier: v ? { sessionId: v.sessionId, seed: v.seed } : null,
+        autoStart,
+      };
+
+      // Spawn each member. `--dangerously-skip-permissions` (user-approved, swarm
+      // panes only) skips the workspace trust dialog — which otherwise eats the
+      // typed seed — and the per-tool approval prompts, so the agents can run the
+      // task hands-off in the directory the user explicitly chose.
+      console.log('[chorus:fanout] spawning', configs.map((c) => c.sessionId));
+      for (const cfg of configs) {
+        await manager.spawn(
+          cfg,
+          { cols: 80, rows: 24 },
+          { command: 'claude --dangerously-skip-permissions' },
+        );
+      }
+      console.log('[chorus:fanout] spawned; scheduling seed in', SEED_DELAY_MS, 'ms');
+
+      // Seed the workers once the TUIs have rendered. Auto-start appends Enter so
+      // each agent actually begins its task. When auto-start is off (review mode),
+      // the verifier is seeded here too (insert only) since nothing will run to
+      // release the gate.
+      const initial = autoStart ? workerPlan : plan;
       window.setTimeout(() => {
-        for (const p of plan) {
-          if (manager.has(p.sessionId)) manager.write(p.sessionId, p.seed);
+        console.log('[chorus:fanout] seeding timer fired', {
+          count: initial.length,
+          autoStart,
+        });
+        for (const p of initial) {
+          const live = manager.has(p.sessionId);
+          console.log('[chorus:fanout] write seed', {
+            sessionId: p.sessionId,
+            live,
+            seedPreview: p.seed.slice(0, 60),
+          });
+          if (!live) continue;
+          manager.write(p.sessionId, autoStart ? `${p.seed}\r` : p.seed);
+          seededIds.current.add(p.sessionId);
         }
-      }, 1500);
+      }, SEED_DELAY_MS);
     },
     [state, active, manager, swarmWorkspace],
   );
+
+  // Release the gated verifier off worker status changes: once every worker has
+  // actually run (entered `running`) and settled back to `idle`, type the
+  // verifier's seed. Workers themselves are seeded by the timer in `fanOut`.
+  // Writes go through the manager and progress is tracked in refs, so this never
+  // loops on its own state (see the Allotment depth bug in memory).
+  useEffect(() => {
+    const pf = pendingFanOut.current;
+    if (!pf || !pf.autoStart || !pf.verifier) return;
+    if (seededIds.current.has(pf.verifier.sessionId)) return;
+
+    // Record workers that have started a turn.
+    for (const id of pf.workerIds) {
+      if (statusById.get(id) === 'running') workerHasRun.current.add(id);
+    }
+
+    const workerStates = pf.workerIds.map((id) => ({
+      hasRun: workerHasRun.current.has(id),
+      status: statusById.get(id) ?? 'spawning',
+    }));
+    const vSt = statusById.get(pf.verifier.sessionId);
+    const release = workersReleaseVerifier(workerStates);
+    console.log('[chorus:verifier] gate check', {
+      workerStates,
+      verifierStatus: vSt,
+      release,
+    });
+    if (release && vSt && isReadyToSubmit(vSt) && manager.has(pf.verifier.sessionId)) {
+      console.log('[chorus:verifier] releasing verifier', pf.verifier.sessionId);
+      manager.write(pf.verifier.sessionId, `${pf.verifier.seed}\r`);
+      seededIds.current.add(pf.verifier.sessionId);
+      pendingFanOut.current = null;
+    }
+  }, [statusById, manager]);
 
   // ---- rendering ----
 
@@ -676,6 +847,24 @@ export function App({
             }}
           >
             {maximized ? '🗗' : '🗖'}
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              closePane(sessionId);
+            }}
+            title="Close pane"
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--fg-muted)',
+              cursor: 'pointer',
+              fontSize: 14,
+              lineHeight: 1,
+              padding: '0 2px',
+            }}
+          >
+            ✕
           </button>
         </div>
 
@@ -806,6 +995,21 @@ export function App({
               );
             })}
           </div>
+          <button
+            onClick={resetView}
+            title="Reset to a single clean pane (recover a broken view)"
+            style={{
+              background: 'var(--bg)',
+              color: 'var(--fg)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: '4px 12px',
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            ↺ Reset
+          </button>
           <div
             style={{
               marginLeft: 'auto',
@@ -876,15 +1080,17 @@ export function App({
         </header>
 
         <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-          {showMaximized ? (
-            renderPane(maximizedId!)
-          ) : (
-            <LayoutView
-              node={active.layout}
-              renderPane={renderPane}
-              onSizes={onSizes}
-            />
-          )}
+          <ErrorBoundary resetKey={active.id}>
+            {showMaximized ? (
+              renderPane(maximizedId!)
+            ) : (
+              <LayoutView
+                node={active.layout}
+                renderPane={renderPane}
+                onSizes={onSizes}
+              />
+            )}
+          </ErrorBoundary>
         </div>
       </div>
 
@@ -907,7 +1113,11 @@ export function App({
       )}
 
       {voiceEnabled && (
-        <RecordingIndicator status={voice.status} onCancel={voice.cancel} />
+        <RecordingIndicator
+          status={voice.status}
+          onStop={voice.stop}
+          onCancel={voice.cancel}
+        />
       )}
       {voice.error && (
         <div

@@ -74,6 +74,7 @@ export class PtyHost {
   spawn(opts: SpawnOptions): void {
     if (this.procs.has(opts.sessionId)) return; // idempotent
     const shell = opts.shell || defaultShell();
+    const cwd = resolveCwd(opts.cwd);
     const command = this.hooksFile
       ? withClaudeHooks(opts.command, this.hooksFile)
       : opts.command;
@@ -82,7 +83,7 @@ export class PtyHost {
       name: 'xterm-256color',
       cols: opts.cols || 80,
       rows: opts.rows || 24,
-      cwd: resolveCwd(opts.cwd),
+      cwd,
       env: { ...process.env, ...(opts.env ?? {}) } as Record<string, string>,
     });
     this.procs.set(opts.sessionId, proc);

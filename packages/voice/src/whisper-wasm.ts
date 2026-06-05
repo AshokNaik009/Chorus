@@ -12,10 +12,13 @@ import { decodeToMono16k } from './audio.js';
  * machine — there is no cloud STT anywhere in this path.
  */
 
+// jsDelivr's `/+esm` endpoint returns a ready-to-import ESM bundle (the bare
+// package URL does not resolve to a usable module).
 const DEFAULT_MODULE_URL =
-  'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.2.4';
-// `base` trades a little latency for noticeably better accuracy than `tiny`.
-const DEFAULT_MODEL = 'onnx-community/whisper-base';
+  'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.2.4/+esm';
+// Canonical transformers.js model. `tiny.en` is small + fast for a snappy first
+// run (English); swap for 'Xenova/whisper-base' for multilingual/accuracy.
+const DEFAULT_MODEL = 'Xenova/whisper-tiny.en';
 
 type WhisperPipeline = (
   audio: Float32Array,

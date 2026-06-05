@@ -26,6 +26,7 @@ export {
 } from './Voice.js';
 export type { VoiceStatus } from './Voice.js';
 export { HelpButton } from './Tutorial.js';
+export { ErrorBoundary } from './ErrorBoundary.js';
 export { SwarmPanel } from './SwarmPanel.js';
 export type { SwarmPanelProps } from './SwarmPanel.js';
 export { darkTheme, xtermTheme } from './theme.js';

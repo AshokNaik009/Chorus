@@ -43,8 +43,15 @@ export interface SwarmMember {
   sessionId: string;
   /** 'frontend' | 'backend' | 'tests' | free text. */
   role?: string;
-  /** The prompt the member was/should be seeded with. */
+  /** This agent's individual task, woven into its seed prompt. */
+  task?: string;
+  /** Full seed override; when set, replaces the templated prompt entirely. */
   seedPrompt?: string;
+  /**
+   * Gated members (the verifier) do not auto-start with the others — they are
+   * released only after every non-gated member has finished (PRD Epic 10).
+   */
+  gated?: boolean;
 }
 
 /**

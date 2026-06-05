@@ -67,8 +67,12 @@ export function useVoiceCapture(params: {
     setStatus('transcribing');
     t.stop()
       .then((text) => {
-        const routed = routeVoiceTranscript(text, mode, targetRef.current);
+        const target = targetRef.current;
+        const routed = routeVoiceTranscript(text, mode, target);
         if (routed) write(routed.sessionId, routed.data);
+        else if (target && !text.trim()) {
+          setError('No speech detected — nothing was inserted. Try speaking a bit longer.');
+        }
       })
       .catch((e) => setError(`Transcription failed: ${(e as Error)?.message ?? 'error'}`))
       .finally(() => {
@@ -220,9 +224,11 @@ export function VoiceMicButton({
 /** Animated, fixed indicator visible only while the mic is live (US-9.4). */
 export function RecordingIndicator({
   status,
+  onStop,
   onCancel,
 }: {
   status: VoiceStatus;
+  onStop: () => void;
   onCancel: () => void;
 }) {
   if (status === 'idle') return null;
@@ -255,23 +261,43 @@ export function RecordingIndicator({
           animation: 'chorus-pulse 1s ease-in-out infinite',
         }}
       />
-      {status === 'recording' ? 'Listening…' : 'Transcribing…'}
+      {status === 'recording'
+        ? 'Listening… click Stop (or release the hotkey) to insert'
+        : 'Transcribing… first run downloads the model, this can take a moment'}
       {status === 'recording' && (
-        <button
-          onClick={onCancel}
-          title="Cancel (Esc)"
-          style={{
-            background: 'transparent',
-            border: '1px solid var(--border)',
-            color: 'var(--fg-muted)',
-            borderRadius: 6,
-            padding: '2px 8px',
-            cursor: 'pointer',
-            fontSize: 11,
-          }}
-        >
-          Esc to cancel
-        </button>
+        <>
+          <button
+            onClick={onStop}
+            title="Stop & insert the transcript"
+            style={{
+              background: 'var(--accent)',
+              border: 'none',
+              color: '#0e1116',
+              borderRadius: 6,
+              padding: '3px 10px',
+              cursor: 'pointer',
+              fontSize: 11,
+              fontWeight: 600,
+            }}
+          >
+            ⏹ Stop
+          </button>
+          <button
+            onClick={onCancel}
+            title="Cancel (Esc)"
+            style={{
+              background: 'transparent',
+              border: '1px solid var(--border)',
+              color: 'var(--fg-muted)',
+              borderRadius: 6,
+              padding: '3px 8px',
+              cursor: 'pointer',
+              fontSize: 11,
+            }}
+          >
+            Esc
+          </button>
+        </>
       )}
     </div>
   );

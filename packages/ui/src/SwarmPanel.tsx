@@ -17,7 +17,14 @@ export interface SwarmPanelProps {
   onRemoveSwarm: (swarmId: string) => void;
   onSwarmBroadcast: (swarmId: string, text: string, submit: boolean) => void;
   onSwarmStopAll: (swarmId: string) => void;
-  onFanOut: (name: string, task: string, roles: string[]) => void;
+  onFanOut: (
+    name: string,
+    task: string,
+    workers: { role: string; task: string }[],
+    verifier: { task: string } | null,
+    autoStart: boolean,
+    dir: string,
+  ) => void;
   onFocusSession: (sessionId: string) => void;
 }
 
@@ -87,9 +94,23 @@ export function SwarmPanel(props: SwarmPanelProps) {
   const [roleById, setRoleById] = useState<Record<string, string>>({});
 
   // fan-out
+  const [foDir, setFoDir] = useState('');
   const [foName, setFoName] = useState('');
   const [foTask, setFoTask] = useState('');
-  const [foRoles, setFoRoles] = useState<string[]>(['frontend', 'backend', 'tests']);
+  const [foWorkers, setFoWorkers] = useState<{ role: string; task: string }[]>([
+    { role: 'frontend', task: '' },
+    { role: 'backend', task: '' },
+    { role: 'tests', task: '' },
+  ]);
+  const [foVerifier, setFoVerifier] = useState(false);
+  const [foVerifierTask, setFoVerifierTask] = useState('');
+  const [foAutoStart, setFoAutoStart] = useState(true);
+  const defaultVerifierPrompt = props.sharedDirAvailable
+    ? 'You are the verifier. The other agents have finished. Review their output via the shared blackboard (CHORUS_SWARM.md) and the files they changed, check correctness, run or inspect the tests, and record any issues in the Log.'
+    : 'You are the verifier. The other agents have finished. Review their output by reading the other panes / asking the human, check correctness, run or inspect the tests, and report any issues.';
+  const validWorkers = foWorkers.filter((w) => w.role.trim());
+  const maxWorkers = foVerifier ? 5 : 6;
+  const dirReady = foDir.trim().length > 0;
 
   return (
     <div
@@ -126,7 +147,8 @@ export function SwarmPanel(props: SwarmPanelProps) {
           </button>
         </div>
 
-        {/* Broadcast */}
+        {/* Broadcast — temporarily disabled */}
+        {false && (
         <div style={box}>
           <div style={sectionTitle}>Broadcast</div>
           <div style={muted}>
@@ -238,66 +260,146 @@ export function SwarmPanel(props: SwarmPanelProps) {
             </div>
           )}
         </div>
+        )}
 
         {/* Fan-out */}
         <div style={box}>
           <div style={sectionTitle}>Fan out a task</div>
           <div style={muted}>
-            Spawn one role-seeded pane per role and seed each with the task, its role
+            Give each agent its own task; they auto-start in parallel
             {props.sharedDirAvailable
-              ? ', and a shared blackboard file the agents coordinate through.'
+              ? ' and coordinate through a shared blackboard file.'
               : '. (A shared blackboard needs the desktop app — here the agents coordinate via you.)'}
             {' '}This replaces the current workspace layout.
           </div>
+          <label style={{ ...muted, color: 'var(--fg)' }}>Directory path (required)</label>
+          <input
+            value={foDir}
+            onChange={(e) => setFoDir(e.target.value)}
+            placeholder="/absolute/path/to/project"
+            style={{ ...input, borderColor: dirReady ? 'var(--border)' : 'var(--status-waiting)' }}
+          />
+          {!dirReady && (
+            <div style={muted}>Enter a directory to enable the rest of the form.</div>
+          )}
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              opacity: dirReady ? 1 : 0.4,
+              pointerEvents: dirReady ? 'auto' : 'none',
+            }}
+          >
           <input value={foName} onChange={(e) => setFoName(e.target.value)} placeholder="swarm name" style={input} />
           <textarea
             value={foTask}
             onChange={(e) => setFoTask(e.target.value)}
-            placeholder="the shared objective"
+            placeholder="shared context for all agents (optional)"
             rows={2}
             style={{ ...input, resize: 'vertical' }}
           />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {foRoles.map((r, i) => (
-              <div key={i} style={{ display: 'flex', gap: 6 }}>
-                <input
-                  value={r}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {foWorkers.map((w, i) => (
+              <div
+                key={i}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                  padding: 8,
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                }}
+              >
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input
+                    value={w.role}
+                    onChange={(e) =>
+                      setFoWorkers((p) => p.map((x, j) => (j === i ? { ...x, role: e.target.value } : x)))
+                    }
+                    placeholder={`agent ${i + 1} role (e.g. writer)`}
+                    style={{ ...input, flex: 1 }}
+                  />
+                  <button
+                    style={{ ...ghost, padding: '4px 10px' }}
+                    onClick={() => setFoWorkers((p) => p.filter((_, j) => j !== i))}
+                    disabled={foWorkers.length <= 1}
+                  >
+                    ×
+                  </button>
+                </div>
+                <textarea
+                  value={w.task}
                   onChange={(e) =>
-                    setFoRoles((p) => p.map((x, j) => (j === i ? e.target.value : x)))
+                    setFoWorkers((p) => p.map((x, j) => (j === i ? { ...x, task: e.target.value } : x)))
                   }
-                  placeholder={`role ${i + 1}`}
-                  style={{ ...input, flex: 1 }}
+                  placeholder="this agent's task…"
+                  rows={2}
+                  style={{ ...input, resize: 'vertical' }}
                 />
-                <button
-                  style={{ ...ghost, padding: '4px 10px' }}
-                  onClick={() => setFoRoles((p) => p.filter((_, j) => j !== i))}
-                  disabled={foRoles.length <= 1}
-                >
-                  ×
-                </button>
               </div>
             ))}
           </div>
+          <button
+            style={{ ...ghost, alignSelf: 'flex-start' }}
+            onClick={() => setFoWorkers((p) => (p.length >= maxWorkers ? p : [...p, { role: '', task: '' }]))}
+            disabled={foWorkers.length >= maxWorkers}
+            title={`Up to ${maxWorkers} worker agents`}
+          >
+            + agent
+          </button>
+
+          <label style={{ ...muted, display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="checkbox"
+              checked={foVerifier}
+              onChange={(e) => {
+                const on = e.target.checked;
+                setFoVerifier(on);
+                if (on && !foVerifierTask.trim()) setFoVerifierTask(defaultVerifierPrompt);
+              }}
+            />
+            Add a verifier agent (runs after the others finish)
+          </label>
+          {foVerifier && (
+            <textarea
+              value={foVerifierTask}
+              onChange={(e) => setFoVerifierTask(e.target.value)}
+              placeholder="verifier instructions…"
+              rows={3}
+              style={{ ...input, resize: 'vertical' }}
+            />
+          )}
+
+          <label style={{ ...muted, display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="checkbox"
+              checked={foAutoStart}
+              onChange={(e) => setFoAutoStart(e.target.checked)}
+            />
+            Auto-start agents (send Enter when each pane is ready)
+          </label>
+
           <div style={{ display: 'flex', gap: 8 }}>
             <button
-              style={ghost}
-              onClick={() => setFoRoles((p) => (p.length >= 6 ? p : [...p, '']))}
-              disabled={foRoles.length >= 6}
-              title="Up to 6 agents"
-            >
-              + role
-            </button>
-            <button
               style={{ ...primary, marginLeft: 'auto' }}
-              disabled={!foName.trim() || foRoles.filter((r) => r.trim()).length === 0}
+              disabled={!dirReady || !foName.trim() || validWorkers.length === 0}
               onClick={() => {
-                const roles = foRoles.map((r) => r.trim()).filter(Boolean);
-                props.onFanOut(foName.trim(), foTask.trim(), roles);
+                props.onFanOut(
+                  foName.trim(),
+                  foTask.trim(),
+                  validWorkers.map((w) => ({ role: w.role.trim(), task: w.task })),
+                  foVerifier ? { task: foVerifierTask } : null,
+                  foAutoStart,
+                  foDir.trim(),
+                );
                 props.onClose();
               }}
             >
-              Fan out {foRoles.filter((r) => r.trim()).length} agents
+              Fan out {validWorkers.length + (foVerifier ? 1 : 0)} agents
             </button>
+          </div>
           </div>
         </div>
 

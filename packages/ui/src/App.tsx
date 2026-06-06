@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   addWorkspace,
   broadcastTo,
-  buildBlackboardDoc,
+  buildAgentSystemPrompt,
+  buildClaudeLaunch,
   buildRow,
   buildTemplate,
+  buildVerifierTask,
   buildWorkspaceBundle,
   collectSessionIds,
   countPanes,
@@ -14,14 +16,12 @@ import {
   DEFAULT_VOICE_SETTINGS,
   defaultWorkspaceState,
   getActiveWorkspace,
-  isReadyToSubmit,
-  planFanOut,
+  planAgentWorktrees,
   reconcileImport,
   removePane,
   removeSessionConfig,
   removeSwarm,
   removeWorkspace,
-  resumeArgs,
   serializeBundle,
   setActiveWorkspace,
   setSizesAtPath,
@@ -144,6 +144,17 @@ export function App({
 
   const handles = useRef(new Map<string, TerminalPaneHandle>());
 
+  // Git worktrees created for the active swarm fan-out (Epic 10). Torn down on a
+  // reset, workspace close, or the next fan-out so they don't accumulate.
+  const activeWorktrees = useRef<{ repoDir: string; worktreeDir: string }[]>([]);
+  const cleanupWorktrees = useCallback(() => {
+    const wts = activeWorktrees.current;
+    activeWorktrees.current = [];
+    for (const wt of wts) {
+      void swarmWorkspace?.removeWorktree(wt.repoDir, wt.worktreeDir);
+    }
+  }, [swarmWorkspace]);
+
   // Re-spawn a workspace's saved sessions that aren't live yet. Idempotent:
   // manager.spawn() no-ops on an id it already owns.
   const ensureSpawned = useCallback(
@@ -152,9 +163,9 @@ export function App({
         if (!manager.has(cfg.sessionId)) {
           // A pane with a captured Claude id (from a Layer-2 import) relaunches
           // with `--resume` so it restores its prior conversation (PRD US-11.5).
-          const command = cfg.claudeSessionId
-            ? `claude ${resumeArgs(cfg.claudeSessionId).join(' ')}`
-            : 'claude';
+          const command = buildClaudeLaunch({
+            resumeSessionId: cfg.claudeSessionId,
+          });
           void manager.spawn(cfg, { cols: 80, rows: 24 }, { command });
         }
       }
@@ -196,6 +207,13 @@ export function App({
     for (const s of live) m.set(s.config.sessionId, s.status);
     return m;
   }, [live]);
+  // Completed turns (Stop hooks) per session — the verifier gate reads this, not
+  // `status`, because CLI-arg agents never enter `running`.
+  const turnsById = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of live) m.set(s.config.sessionId, s.turnsCompleted);
+    return m;
+  }, [live]);
   const statusOf = useCallback(
     (id: string): SessionStatus | null => statusById.get(id) ?? null,
     [statusById],
@@ -233,6 +251,7 @@ export function App({
     setState(next);
     setFocusedId(null);
     setMaximizedId(null);
+    cleanupWorktrees();
     if (ws) {
       for (const s of ws.sessions) {
         try {
@@ -265,6 +284,9 @@ export function App({
     if (!state || !active) return;
     for (const s of active.sessions) manager.remove(s.sessionId);
     handles.current.clear();
+    cleanupWorktrees();
+    pendingFanOut.current = null;
+    setQueuedVerifierId(null);
     setState(
       updateWorkspace(state, active.id, {
         layout: buildTemplate(n),
@@ -282,13 +304,17 @@ export function App({
     title?: string,
   ) => {
     if (!state || !active) return;
-    const label = command === 'claude' ? 'claude' : 'shell';
+    const isClaude = command === 'claude';
+    const label = isClaude ? 'claude' : 'shell';
+    // The launcher's "claude" becomes a blank interactive session (no prompt
+    // arg); a shell command passes through unchanged.
+    const spawnCommand = isClaude ? buildClaudeLaunch() : command;
     const cfg: SessionConfig = {
       sessionId,
       title: title?.trim() || `${label} · ${basename(cwd)}`,
       cwd,
     };
-    void manager.spawn(cfg, { cols: 80, rows: 24 }, { command });
+    void manager.spawn(cfg, { cols: 80, rows: 24 }, { command: spawnCommand });
     setState(upsertSession(state, active.id, cfg));
     setFocusedId(sessionId);
   };
@@ -546,18 +572,17 @@ export function App({
   // ---- swarm (PRD Epic 10) ----
 
   const [swarmOpen, setSwarmOpen] = useState(false);
-  // In-flight fan-out. Workers are seeded on a short timer (the Claude TUI needs
-  // a beat to render before it accepts a typed prompt). The verifier is held and
-  // released by the effect below once every worker has run and gone idle.
+  // The deferred verifier's pane id, while it is held. Drives a "queued"
+  // placeholder so the pane never looks like a dead agent that lost its prompt.
+  const [queuedVerifierId, setQueuedVerifierId] = useState<string | null>(null);
+  // In-flight fan-out with a deferred verifier: the verifier pane is held until
+  // every worker has finished its first turn, then spawned by the effect below.
+  // The workers' prompts are CLI args (auto-submit), so there is no seed-typing.
   const pendingFanOut = useRef<{
     workerIds: string[];
-    verifier: { sessionId: string; seed: string } | null;
-    autoStart: boolean;
+    verifier: { config: SessionConfig; command: string };
   } | null>(null);
-  const seededIds = useRef<Set<string>>(new Set());
   const workerHasRun = useRef<Set<string>>(new Set());
-  /** Delay before typing seeds, so the Claude TUI's input is ready. */
-  const SEED_DELAY_MS = 1800;
   const swarmWriter = useMemo(
     () => ({ write: (id: string, d: string) => manager.write(id, d) }),
     [manager],
@@ -582,6 +607,15 @@ export function App({
     (sessionIds: string[], text: string, submit: boolean) =>
       broadcastTo(swarmWriter, sessionIds, text, submit),
     [swarmWriter],
+  );
+
+  // Probe whether a chosen fan-out directory is a git repo (worktree isolation
+  // needs one). Stable identity so the panel's debounced check doesn't re-fire
+  // every render. Resolves false when the host can't check (web).
+  const checkGitRepo = useCallback(
+    (dir: string): Promise<boolean> =>
+      swarmWorkspace?.isGitRepo(dir) ?? Promise.resolve(false),
+    [swarmWorkspace],
   );
 
   const createSwarm = useCallback(
@@ -611,34 +645,44 @@ export function App({
     async (
       name: string,
       task: string,
-      workers: { role: string; task: string }[],
+      workers: { role: string; task: string; dir?: string }[],
       verifier: { task: string } | null,
       autoStart: boolean,
       dir: string,
     ) => {
-      console.log('[chorus:fanout] called', {
-        name,
-        workers,
-        verifier,
-        autoStart,
-        hasState: !!state,
-        hasActive: !!active,
-      });
-      if (!state || !active) {
-        console.warn('[chorus:fanout] aborted — no state/active workspace');
-        return;
-      }
-      // The user picks the working directory the agents run in (required).
-      const cwd = dir.trim() || active.defaultCwd;
-      // Seeds are typed into the TUI, so collapse any newlines (a newline would
-      // submit the prompt mid-sentence).
+      if (!state || !active) return;
+      // The default directory; each worker may override it with its own (its own
+      // repo), so one swarm can span several repos.
+      const defaultDir = dir.trim() || active.defaultCwd;
+      const sharedTask = task.trim() || undefined;
+      // Collapse newlines so a task stays a single positional CLI arg.
       const oneLine = (s: string) => s.replace(/\s*\n\s*/g, ' ').trim();
+
+      // Tear down the current sessions + any prior worktrees before re-laying out.
+      for (const s of active.sessions) {
+        try {
+          manager.remove(s.sessionId);
+        } catch {
+          /* already gone */
+        }
+      }
+      handles.current.clear();
+      cleanupWorktrees();
+      // Drop any verifier still queued from a previous fan-out.
+      pendingFanOut.current = null;
+      setQueuedVerifierId(null);
+
+      const host = swarmWorkspace;
+
       const workerMembers = workers.map((w) => ({
         sessionId: createSessionId(),
         role: w.role.trim() || undefined,
         task: oneLine(w.task) || undefined,
         gated: false,
       }));
+      // The directory each worker runs in (its own repo, or the default),
+      // parallel to workerMembers. Kept off the persisted member.
+      const workerDirs = workers.map((w) => w.dir?.trim() || defaultDir);
       const verifierMember = verifier
         ? {
             sessionId: createSessionId(),
@@ -653,39 +697,53 @@ export function App({
         : workerMembers;
       const ids = members.map((m) => m.sessionId);
       const swarmId = createSwarmId();
-      let def: SwarmDef = {
+      const def: SwarmDef = {
         swarmId,
         workspaceId: active.id,
         name,
-        task: task.trim() || undefined,
+        task: sharedTask,
         members,
       };
 
-      // Tear down the current sessions in this workspace before re-laying it out.
-      for (const s of active.sessions) {
-        try {
-          manager.remove(s.sessionId);
-        } catch {
-          /* already gone */
+      // Create an isolated worktree + branch per worker (best-effort). The branch
+      // names are appended to the verifier's prompt so it knows where to review.
+      // The run id (from the unique swarmId) keeps re-runs of a same-named swarm
+      // from colliding with the previous run's branches.
+      const plan = planAgentWorktrees(
+        name,
+        workerMembers.map((m) => m.role ?? ''),
+        swarmId.slice(-6),
+      );
+      // Per worker: if its directory is a git repo, isolate it in a worktree +
+      // branch inside that repo; otherwise it runs directly in the directory
+      // (shared if several agents point at the same non-repo dir). Checking the
+      // repo per worker is what lets a swarm span several repos.
+      const branches: string[] = [];
+      const workerCwds: string[] = [];
+      for (let i = 0; i < workerMembers.length; i++) {
+        const wdir = workerDirs[i];
+        let wcwd = wdir;
+        if (host?.available && (await host.isGitRepo(wdir))) {
+          const wt = await host.createWorktree(
+            wdir,
+            plan[i].worktreeSubdir,
+            plan[i].branch,
+          );
+          if (wt) {
+            wcwd = wt;
+            branches.push(plan[i].branch);
+            activeWorktrees.current.push({ repoDir: wdir, worktreeDir: wt });
+          }
         }
-      }
-      handles.current.clear();
-
-      // Create the shared blackboard if the host supports it (Electron).
-      let sharedDir: string | null = null;
-      if (swarmWorkspace?.available) {
-        sharedDir = await swarmWorkspace.createBlackboard(
-          swarmId,
-          cwd,
-          buildBlackboardDoc(def),
-        );
-        if (sharedDir) def = { ...def, sharedDir };
+        workerCwds.push(wcwd);
       }
 
-      const configs: SessionConfig[] = members.map((m) => ({
+      const configs: SessionConfig[] = members.map((m, i) => ({
         sessionId: m.sessionId,
         title: `${m.role ?? 'agent'} · ${name}`,
-        cwd,
+        // Workers run in their own worktree/dir; the verifier reviews from the
+        // default directory (the integration point).
+        cwd: m.gated ? defaultDir : workerCwds[i],
       }));
       let next = updateWorkspace(state, active.id, {
         layout: buildRow(ids),
@@ -696,91 +754,100 @@ export function App({
       setFocusedId(ids[0] ?? null);
       setMaximizedId(null);
 
-      const plan = planFanOut(def, sharedDir);
-      const workerPlan = plan.filter((p) => !p.gated);
-      const v = plan.find((p) => p.gated) ?? null;
-      seededIds.current = new Set();
-      workerHasRun.current = new Set();
-      // Arm the verifier gate (driven by the status effect below).
-      pendingFanOut.current = {
-        workerIds: workerPlan.map((p) => p.sessionId),
-        verifier: v ? { sessionId: v.sessionId, seed: v.seed } : null,
-        autoStart,
-      };
+      // Permission posture: hands-off (permissionless skips the trust dialog +
+      // tool prompts) when auto-starting, else keep approval prompts so the human
+      // gates each tool call.
+      const permissionMode = autoStart ? 'permissionless' : 'default';
 
-      // Spawn each member. `--dangerously-skip-permissions` (user-approved, swarm
-      // panes only) skips the workspace trust dialog — which otherwise eats the
-      // typed seed — and the per-tool approval prompts, so the agents can run the
-      // task hands-off in the directory the user explicitly chose.
-      console.log('[chorus:fanout] spawning', configs.map((c) => c.sessionId));
-      for (const cfg of configs) {
-        await manager.spawn(
-          cfg,
-          { cols: 80, rows: 24 },
-          { command: 'claude --dangerously-skip-permissions' },
-        );
-      }
-      console.log('[chorus:fanout] spawned; scheduling seed in', SEED_DELAY_MS, 'ms');
-
-      // Seed the workers once the TUIs have rendered. Auto-start appends Enter so
-      // each agent actually begins its task. When auto-start is off (review mode),
-      // the verifier is seeded here too (insert only) since nothing will run to
-      // release the gate.
-      const initial = autoStart ? workerPlan : plan;
-      window.setTimeout(() => {
-        console.log('[chorus:fanout] seeding timer fired', {
-          count: initial.length,
-          autoStart,
+      // Spawn each worker with its task as the positional prompt — it auto-submits
+      // as the first user turn and stays interactive. No typing into the TUI.
+      for (let i = 0; i < workerMembers.length; i++) {
+        const m = workerMembers[i];
+        // `isolated` is true only when a worktree was actually created (the cwd
+        // moved off the worker's dir) — tell the agent the truth and pin its dir.
+        const isolated = workerCwds[i] !== workerDirs[i];
+        const command = buildClaudeLaunch({
+          prompt: m.task,
+          systemPrompt: buildAgentSystemPrompt(
+            name,
+            m.role,
+            sharedTask,
+            workerCwds[i],
+            isolated,
+          ),
+          permissionMode,
         });
-        for (const p of initial) {
-          const live = manager.has(p.sessionId);
-          console.log('[chorus:fanout] write seed', {
-            sessionId: p.sessionId,
-            live,
-            seedPreview: p.seed.slice(0, 60),
+        await manager.spawn(configs[i], { cols: 80, rows: 24 }, { command });
+      }
+
+      if (verifierMember) {
+        const verifierCfg = configs[configs.length - 1];
+        const verifierCommand = buildClaudeLaunch({
+          prompt: buildVerifierTask(
+            oneLine(verifier!.task) || undefined,
+            branches,
+          ),
+          permissionMode,
+        });
+        if (autoStart) {
+          // Defer: the verifier pane shows a "queued" placeholder until every
+          // worker has finished its first turn, then the effect below spawns it.
+          workerHasRun.current = new Set();
+          pendingFanOut.current = {
+            workerIds: workerMembers.map((m) => m.sessionId),
+            verifier: { config: verifierCfg, command: verifierCommand },
+          };
+          setQueuedVerifierId(verifierCfg.sessionId);
+        } else {
+          // Without auto-start nothing settles the workers to release the gate,
+          // so run the verifier alongside them (its prompt still auto-submits).
+          pendingFanOut.current = null;
+          setQueuedVerifierId(null);
+          await manager.spawn(verifierCfg, { cols: 80, rows: 24 }, {
+            command: verifierCommand,
           });
-          if (!live) continue;
-          manager.write(p.sessionId, autoStart ? `${p.seed}\r` : p.seed);
-          seededIds.current.add(p.sessionId);
         }
-      }, SEED_DELAY_MS);
+      } else {
+        pendingFanOut.current = null;
+        setQueuedVerifierId(null);
+      }
     },
-    [state, active, manager, swarmWorkspace],
+    [state, active, manager, swarmWorkspace, cleanupWorktrees],
   );
 
-  // Release the gated verifier off worker status changes: once every worker has
-  // actually run (entered `running`) and settled back to `idle`, type the
-  // verifier's seed. Workers themselves are seeded by the timer in `fanOut`.
-  // Writes go through the manager and progress is tracked in refs, so this never
-  // loops on its own state (see the Allotment depth bug in memory).
+  // Defer-spawn the verifier off worker turn-completion: once every worker has
+  // finished its first turn (a Stop hook → `turnsCompleted >= 1`) or exited,
+  // spawn the verifier pane with its task. CLI-arg agents never enter `running`,
+  // so the gate reads completed turns, not status. Progress is tracked in refs
+  // and the spawn is idempotent (`manager.has` guard), so this never loops on its
+  // own state (see the Allotment depth bug in memory).
   useEffect(() => {
     const pf = pendingFanOut.current;
-    if (!pf || !pf.autoStart || !pf.verifier) return;
-    if (seededIds.current.has(pf.verifier.sessionId)) return;
+    if (!pf) return;
+    if (manager.has(pf.verifier.config.sessionId)) return; // already spawned
 
-    // Record workers that have started a turn.
+    // A worker is "done" with its first turn once it has a completed turn (Stop
+    // hook) — or it crashed/exited (don't hang the verifier on a dead worker).
     for (const id of pf.workerIds) {
-      if (statusById.get(id) === 'running') workerHasRun.current.add(id);
+      const turns = turnsById.get(id) ?? 0;
+      if (turns >= 1 || statusById.get(id) === 'exited') {
+        workerHasRun.current.add(id);
+      }
     }
 
-    const workerStates = pf.workerIds.map((id) => ({
-      hasRun: workerHasRun.current.has(id),
-      status: statusById.get(id) ?? 'spawning',
-    }));
-    const vSt = statusById.get(pf.verifier.sessionId);
-    const release = workersReleaseVerifier(workerStates);
-    console.log('[chorus:verifier] gate check', {
-      workerStates,
-      verifierStatus: vSt,
-      release,
+    const workerStates = pf.workerIds.map((id) => {
+      const st = statusById.get(id) ?? 'spawning';
+      // A crashed worker counts as settled so it can't stall the verifier.
+      return { hasRun: workerHasRun.current.has(id), status: st === 'exited' ? 'idle' : st };
     });
-    if (release && vSt && isReadyToSubmit(vSt) && manager.has(pf.verifier.sessionId)) {
-      console.log('[chorus:verifier] releasing verifier', pf.verifier.sessionId);
-      manager.write(pf.verifier.sessionId, `${pf.verifier.seed}\r`);
-      seededIds.current.add(pf.verifier.sessionId);
+    if (workersReleaseVerifier(workerStates)) {
+      const { config, command } = pf.verifier;
       pendingFanOut.current = null;
+      setQueuedVerifierId(null);
+      void manager.spawn(config, { cols: 80, rows: 24 }, { command });
+      setFocusedId(config.sessionId);
     }
-  }, [statusById, manager]);
+  }, [statusById, turnsById, manager]);
 
   // ---- rendering ----
 
@@ -879,6 +946,29 @@ export function App({
                 else handles.current.delete(id);
               }}
             />
+          ) : sessionId === queuedVerifierId ? (
+            <div
+              style={{
+                height: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                textAlign: 'center',
+                padding: 16,
+                color: 'var(--fg-muted)',
+              }}
+            >
+              <div style={{ fontSize: 22 }}>⏳</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)' }}>
+                Verifier queued
+              </div>
+              <div style={{ fontSize: 11.5, maxWidth: 280, lineHeight: 1.5 }}>
+                Waiting for the worker agents to finish their first turn. The
+                verifier starts automatically — its prompt will run then.
+              </div>
+            </div>
           ) : (
             <PaneLauncher
               defaultCwd={active?.defaultCwd ?? defaultCwd}
@@ -1098,7 +1188,8 @@ export function App({
         <SwarmPanel
           workspace={active}
           statusOf={statusOf}
-          sharedDirAvailable={!!swarmWorkspace?.available}
+          worktreesAvailable={!!swarmWorkspace?.available}
+          checkGitRepo={checkGitRepo}
           onClose={() => setSwarmOpen(false)}
           onBroadcast={adHocBroadcast}
           onCreateSwarm={createSwarm}

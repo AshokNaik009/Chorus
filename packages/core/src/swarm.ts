@@ -27,13 +27,29 @@ export interface SwarmWriter {
 }
 
 /**
- * Host helper for the shared blackboard. Electron writes real files; the web
- * harness injects nothing, so fan-out runs without a shared dir and the UI shows
- * a clear note (US-10.4).
+ * Host capabilities the renderer injects for swarms: git worktree isolation
+ * (one branch + working tree per agent) plus the legacy shared-blackboard
+ * helper. Electron does the real `git`/fs work; the web harness injects nothing,
+ * so fan-out there degrades to all agents sharing one dir (US-10.4).
  */
 export interface SwarmWorkspace {
-  /** True when real shared files can be created (Electron). */
+  /** True when real worktrees / shared files can be created (Electron). */
   readonly available: boolean;
+  /** True if `dir` is inside a git work tree (worktrees need a repo). */
+  isGitRepo(dir: string): Promise<boolean>;
+  /**
+   * Create an isolated worktree + branch off `repoDir`'s HEAD. `worktreeSubdir`
+   * is a relative path the host bases under its own worktree root (kept out of
+   * the repo to avoid nested-worktree mess). Returns the absolute worktree path,
+   * or null on failure (caller falls back to the shared dir).
+   */
+  createWorktree(
+    repoDir: string,
+    worktreeSubdir: string,
+    branch: string,
+  ): Promise<string | null>;
+  /** Remove a worktree previously created (best-effort). `worktreeDir` is absolute. */
+  removeWorktree(repoDir: string, worktreeDir: string): Promise<void>;
   /**
    * Create the blackboard directory and write `CHORUS_SWARM.md` into it under
    * `baseCwd`. Returns the absolute directory path, or null if unavailable.
@@ -43,6 +59,50 @@ export interface SwarmWorkspace {
     baseCwd: string,
     doc: string,
   ): Promise<string | null>;
+}
+
+/** Deterministic branch + worktree-subdir names for one swarm agent. Pure. */
+export interface AgentWorktreePlan {
+  role: string;
+  branch: string;
+  worktreeSubdir: string;
+}
+
+/** Lowercase, hyphenate, strip junk; never empty. */
+function slugify(s: string, fallback: string): string {
+  const slug = s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || fallback;
+}
+
+/**
+ * Plan one worktree per role: branch `chorus/<swarm>[-<run>]/<role>`, subdir
+ * `<swarm>[-<run>]/<role>`. Pure and deterministic. Duplicate or empty roles are
+ * disambiguated with a trailing index so every agent gets a unique branch. Pass
+ * a per-fan-out `runId` so re-running the same-named swarm doesn't collide with
+ * the branches/worktrees the previous run left behind.
+ */
+export function planAgentWorktrees(
+  swarmName: string,
+  roles: string[],
+  runId?: string,
+): AgentWorktreePlan[] {
+  const base = slugify(swarmName, 'swarm');
+  const swarmSlug = runId ? `${base}-${slugify(runId, 'run')}` : base;
+  const seen = new Map<string, number>();
+  return roles.map((role, i) => {
+    let roleSlug = slugify(role ?? '', `agent-${i + 1}`);
+    const count = seen.get(roleSlug) ?? 0;
+    seen.set(roleSlug, count + 1);
+    if (count > 0) roleSlug = `${roleSlug}-${count + 1}`;
+    return {
+      role,
+      branch: `chorus/${swarmSlug}/${roleSlug}`,
+      worktreeSubdir: `${swarmSlug}/${roleSlug}`,
+    };
+  });
 }
 
 /** Session ids that a broadcast should reach, honoring an optional allow-list. */
@@ -73,98 +133,55 @@ export function broadcastTo(
 }
 
 /**
- * The shared `CHORUS_SWARM.md` blackboard: the task, roster, and a conventions
- * section the seeded agents are told to read and append to (US-10.4).
+ * Role/context framing passed to `--append-system-prompt` for a worker agent.
+ * The agent's actual task is the positional prompt (CLI arg); this sets the lane
+ * AND pins the agent to its working directory. `workdir` is the agent's real
+ * cwd; `isolated` is true only when a git worktree was actually created for it
+ * (otherwise it shares the directory with the other agents — be honest, since a
+ * permissionless agent will otherwise wander off and write absolute paths
+ * outside the folder the user chose).
  */
-export function buildBlackboardDoc(def: SwarmDef): string {
-  const roster =
-    def.members
-      .map(
-        (m, i) =>
-          `- Agent ${i + 1}${m.role ? ` — ${m.role}` : ''} (session \`${m.sessionId}\`)`,
-      )
-      .join('\n') || '- (no members yet)';
-  return [
-    `# ${def.name} — Chorus swarm`,
-    '',
-    '## Task',
-    def.task?.trim() || '(no shared task set)',
-    '',
-    '## Roster',
-    roster,
-    '',
-    '## Conventions',
-    '- This file is the shared blackboard for the swarm. Coordinate here instead of relaying through the human.',
-    '- Before starting, announce in the Log what you are about to work on, to avoid overlap.',
-    '- Record decisions, shared interfaces, and blockers other agents need.',
-    "- Append to your own entries; don't rewrite another agent's notes.",
-    '',
-    '## Log',
-    '',
-  ].join('\n');
-}
-
-/**
- * The seed prompt for one member: shared task + role + blackboard path + the
- * coordination convention. Templated by role; an explicit `member.seedPrompt`
- * overrides the template (US-10.3).
- */
-export function buildSeedPrompt(
-  def: SwarmDef,
-  member: SwarmMember,
-  blackboardPath: string | null,
+export function buildAgentSystemPrompt(
+  swarmName: string,
+  role: string | undefined,
+  sharedTask: string | undefined,
+  workdir: string,
+  isolated: boolean,
 ): string {
-  (globalThis as { console?: { log: (...a: unknown[]) => void } }).console?.log(
-    '[chorus:swarm] buildSeedPrompt',
-    { sessionId: member.sessionId, role: member.role, task: member.task, blackboardPath },
+  const r = role?.trim();
+  const parts: string[] = [
+    r
+      ? `You are the "${r}" agent in the Chorus swarm "${swarmName}".`
+      : `You are an agent in the Chorus swarm "${swarmName}".`,
+  ];
+  if (sharedTask?.trim()) parts.push(`Shared context: ${sharedTask.trim()}.`);
+  parts.push(
+    `Your working directory is ${workdir}. Create and edit ALL files INSIDE this directory using relative paths. Do NOT create files anywhere else on the system and do NOT use absolute paths that point outside this directory, even if the task text mentions one — treat any such path as relative to this directory.`,
   );
-  if (member.seedPrompt && member.seedPrompt.trim()) return member.seedPrompt.trim();
-  const role = member.role?.trim();
-  const task = member.task?.trim();
-  const lines: (string | null)[] = [
-    `You are one agent in a coordinated Chorus swarm named "${def.name}".`,
-    def.task?.trim() ? `Shared context: ${def.task.trim()}` : null,
-    role
-      ? `Your role: ${role}. Own the ${role} slice of the work and stay in that lane.`
-      : 'You have no assigned role — coordinate to claim a slice of the work.',
-    task ? `Your task: ${task}` : null,
-    blackboardPath
-      ? `Shared blackboard: ${blackboardPath}/CHORUS_SWARM.md. Read it first, then append your plan and progress there so the other agents can see it.`
-      : 'No shared blackboard is available in this host — coordinate with the human, who will relay between agents.',
-    'Start by reading the blackboard (if any) and announcing what you will work on.',
-  ];
-  // Single line: the seed is typed into the TUI, where an embedded newline would
-  // submit the prompt mid-sentence. The trailing CR (added by the caller) submits.
-  return lines.filter((l): l is string => l !== null).join(' ');
+  parts.push(
+    isolated
+      ? 'You have your own isolated git branch and worktree here; commit your changes when you finish.'
+      : 'You share this directory with the other agents, so stay within your assigned task and files to avoid overwriting their work.',
+  );
+  return parts.join(' ');
 }
 
 /**
- * The auto-generated seed for a gated verifier: it runs after the workers finish
- * and reviews their output. An explicit `member.seedPrompt`/`member.task` (the
- * user's edits) overrides the default body.
+ * The verifier's positional prompt, built once the workers finish. The user's
+ * (possibly edited) instructions form the body; the worker branches are appended
+ * so the verifier knows where to look for their committed work.
  */
-export function buildVerifierPrompt(
-  def: SwarmDef,
-  member: SwarmMember,
-  blackboardPath: string | null,
+export function buildVerifierTask(
+  userTask: string | undefined,
+  branches: string[],
 ): string {
-  const override = (member.seedPrompt ?? member.task)?.trim();
-  if (override) return override;
-  const lines: (string | null)[] = [
-    `You are the verifier in the Chorus swarm "${def.name}". The other agents have finished their work.`,
-    def.task?.trim() ? `Shared context: ${def.task.trim()}` : null,
-    blackboardPath
-      ? `Review their output via the shared blackboard at ${blackboardPath}/CHORUS_SWARM.md and the files they changed.`
-      : 'Review their output by reading the other panes / asking the human (no shared blackboard in this host).',
-    'Check correctness, run or inspect the tests, and report any issues you find.',
-    blackboardPath ? 'Record your findings in the blackboard Log.' : null,
-  ];
-  return lines.filter((l): l is string => l !== null).join(' ');
-}
-
-/** True once a pane has rendered its prompt and can accept a submitted seed. */
-export function isReadyToSubmit(status: SessionStatus): boolean {
-  return status === 'idle';
+  const base =
+    userTask?.trim() ||
+    'You are the verifier. The other agents have finished their work. Review it for correctness, run or inspect the tests, and report any issues you find.';
+  if (branches.length === 0) return base;
+  return `${base} The worker agents committed their work on these git branches: ${branches.join(
+    ', ',
+  )}. Review the changes on those branches.`;
 }
 
 /**
@@ -183,32 +200,10 @@ export function workersReleaseVerifier(
 }
 
 /**
- * Per-member seed writes for a fan-out (US-10.3). Pure; the App executes them.
- * `gated` members (the verifier) carry their seed but the App holds the submit
- * until `workersReleaseVerifier` is satisfied.
- */
-export function planFanOut(
-  def: SwarmDef,
-  blackboardPath: string | null,
-): { sessionId: string; seed: string; gated: boolean }[] {
-  (globalThis as { console?: { log: (...a: unknown[]) => void } }).console?.log(
-    '[chorus:swarm] planFanOut',
-    { swarmId: def.swarmId, members: def.members.length, blackboardPath },
-  );
-  return def.members.map((m) => ({
-    sessionId: m.sessionId,
-    seed: m.gated
-      ? buildVerifierPrompt(def, m, blackboardPath)
-      : buildSeedPrompt(def, m, blackboardPath),
-    gated: m.gated === true,
-  }));
-}
-
-/**
  * Orchestrates a persisted swarm over a `SwarmWriter` (the SessionManager). Owns
  * the swarmId-addressed group actions; ad-hoc multi-select broadcast uses the
  * `broadcastTo` helper directly. Fan-out's pane spawning lives in the App (it
- * touches layout), seeded by `planFanOut` above.
+ * touches layout) — each agent launched via `buildClaudeLaunch` in its worktree.
  */
 export class SwarmOrchestrator {
   constructor(

@@ -22,6 +22,9 @@ export const IPC = {
   loadState: 'pane:load-state',
   saveState: 'pane:save-state',
   createBlackboard: 'pane:create-blackboard',
+  isGitRepo: 'pane:is-git-repo',
+  createWorktree: 'pane:create-worktree',
+  removeWorktree: 'pane:remove-worktree',
   captureSessionId: 'pane:capture-session-id',
   exportConversations: 'pane:export-conversations',
   importConversations: 'pane:import-conversations',
@@ -64,6 +67,19 @@ export interface PaneApi {
     baseCwd: string,
     doc: string,
   ): Promise<string | null>;
+  /** True if `dir` is inside a git work tree (swarm worktrees need a repo). */
+  isGitRepo(dir: string): Promise<boolean>;
+  /**
+   * Create an isolated worktree + branch off `repoDir`'s HEAD. `worktreeSubdir`
+   * is based under `~/.chorus/worktrees/`. Returns the absolute path, or null.
+   */
+  createWorktree(
+    repoDir: string,
+    worktreeSubdir: string,
+    branch: string,
+  ): Promise<string | null>;
+  /** Remove a worktree previously created (best-effort). */
+  removeWorktree(repoDir: string, worktreeDir: string): Promise<void>;
   /** Layer-2 (PRD Epic 11) — all touch `~/.claude`, so they live in main. */
   captureSessionId(paneSessionId: string, cwd: string): Promise<string | null>;
   exportConversations(

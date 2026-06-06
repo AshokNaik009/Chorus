@@ -34,6 +34,11 @@ const api: PaneApi = {
   saveState: (state) => ipcRenderer.invoke(IPC.saveState, state),
   createBlackboard: (swarmId, baseCwd, doc) =>
     ipcRenderer.invoke(IPC.createBlackboard, swarmId, baseCwd, doc),
+  isGitRepo: (dir) => ipcRenderer.invoke(IPC.isGitRepo, dir),
+  createWorktree: (repoDir, worktreeSubdir, branch) =>
+    ipcRenderer.invoke(IPC.createWorktree, repoDir, worktreeSubdir, branch),
+  removeWorktree: (repoDir, worktreeDir) =>
+    ipcRenderer.invoke(IPC.removeWorktree, repoDir, worktreeDir),
   captureSessionId: (paneSessionId, cwd) =>
     ipcRenderer.invoke(IPC.captureSessionId, paneSessionId, cwd),
   exportConversations: (items) =>

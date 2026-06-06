@@ -19,6 +19,11 @@ import {
 } from '@app/core';
 import { IPC } from '../shared/ipc.js';
 import { PtyHost } from './pty-host.js';
+import {
+  createWorktree,
+  isGitRepo,
+  removeWorktree,
+} from './git-worktree.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -112,6 +117,21 @@ ipcMain.handle(
       return null;
     }
   },
+);
+
+// Swarm worktrees (Epic 10): isolate each agent in its own git branch + tree.
+ipcMain.handle(IPC.isGitRepo, (_e, dir: string): Promise<boolean> =>
+  isGitRepo(resolveBase(dir)),
+);
+ipcMain.handle(
+  IPC.createWorktree,
+  (_e, repoDir: string, worktreeSubdir: string, branch: string): Promise<string | null> =>
+    createWorktree(resolveBase(repoDir), worktreeSubdir, branch),
+);
+ipcMain.handle(
+  IPC.removeWorktree,
+  (_e, repoDir: string, worktreeDir: string): Promise<void> =>
+    removeWorktree(resolveBase(repoDir), worktreeDir),
 );
 
 // ---- Layer-2 memory portability (PRD Epic 11 / M12). All touch ~/.claude. ----

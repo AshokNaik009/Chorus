@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   broadcastTargets,
   broadcastTo,
-  buildBlackboardDoc,
-  buildSeedPrompt,
+  buildAgentSystemPrompt,
+  buildVerifierTask,
   formatBroadcast,
-  planFanOut,
+  planAgentWorktrees,
   SWARM_INTERRUPT,
   SwarmOrchestrator,
+  workersReleaseVerifier,
   type SwarmWriter,
 } from './swarm.js';
 import type { SwarmDef } from './models.js';
@@ -102,41 +103,74 @@ describe('SwarmOrchestrator', () => {
   });
 });
 
-describe('buildSeedPrompt', () => {
-  it('includes task, role, and the blackboard path', () => {
-    const seed = buildSeedPrompt(def(), def().members[0], '/tmp/swarm');
-    expect(seed).toContain('Feature X');
-    expect(seed).toContain('Ship the login flow');
-    expect(seed).toContain('frontend');
-    expect(seed).toContain('/tmp/swarm/CHORUS_SWARM.md');
+describe('buildAgentSystemPrompt', () => {
+  it('frames the role/context and pins the agent to its isolated worktree', () => {
+    const sp = buildAgentSystemPrompt(
+      'Feature X',
+      'frontend',
+      'Ship the login flow',
+      '/work/feature-x/frontend',
+      true,
+    );
+    expect(sp).toContain('"frontend"');
+    expect(sp).toContain('Feature X');
+    expect(sp).toContain('Ship the login flow');
+    expect(sp).toContain('/work/feature-x/frontend');
+    expect(sp).toContain('relative paths');
+    expect(sp).toContain('isolated git branch');
   });
 
-  it('notes when no blackboard is available', () => {
-    const seed = buildSeedPrompt(def(), def().members[2], null);
-    expect(seed).toContain('No shared blackboard');
-  });
-
-  it('an explicit member.seedPrompt overrides the template', () => {
-    const m = { sessionId: 'a', role: 'frontend', seedPrompt: 'Just do the CSS.' };
-    expect(buildSeedPrompt(def(), m, '/tmp/x')).toBe('Just do the CSS.');
-  });
-});
-
-describe('buildBlackboardDoc', () => {
-  it('contains the task, roster, and a Log section', () => {
-    const doc = buildBlackboardDoc(def());
-    expect(doc).toContain('# Feature X — Chorus swarm');
-    expect(doc).toContain('Ship the login flow');
-    expect(doc).toContain('frontend');
-    expect(doc).toContain('## Log');
+  it('tells a shared-dir agent the truth (no worktree) and still pins the dir', () => {
+    const sp = buildAgentSystemPrompt('Feature X', undefined, undefined, '/tmp/shared', false);
+    expect(sp).toContain('an agent in the Chorus swarm "Feature X"');
+    expect(sp).toContain('/tmp/shared');
+    expect(sp).toContain('share this directory');
+    expect(sp).not.toContain('isolated git branch');
   });
 });
 
-describe('planFanOut', () => {
-  it('produces one seed per member, keyed by session id', () => {
-    const plan = planFanOut(def(), '/tmp/swarm');
-    expect(plan.map((p) => p.sessionId)).toEqual(['a', 'b', 'c']);
-    expect(plan[0].seed).toContain('frontend');
-    expect(plan[1].seed).toContain('backend');
+describe('buildVerifierTask', () => {
+  it('uses the default body and appends the worker branches', () => {
+    const t = buildVerifierTask(undefined, ['chorus/x/a', 'chorus/x/b']);
+    expect(t).toContain('verifier');
+    expect(t).toContain('chorus/x/a, chorus/x/b');
+  });
+
+  it('honors a user override and omits the branch line when none', () => {
+    expect(buildVerifierTask('Just check the build.', [])).toBe('Just check the build.');
+  });
+});
+
+describe('planAgentWorktrees', () => {
+  it('produces a unique branch + subdir per role', () => {
+    const plan = planAgentWorktrees('Feature X', ['frontend', 'backend']);
+    expect(plan[0].branch).toBe('chorus/feature-x/frontend');
+    expect(plan[0].worktreeSubdir).toBe('feature-x/frontend');
+    expect(plan[1].branch).toBe('chorus/feature-x/backend');
+  });
+
+  it('disambiguates duplicate / empty roles', () => {
+    const plan = planAgentWorktrees('S', ['dev', 'dev', '']);
+    const branches = plan.map((p) => p.branch);
+    expect(new Set(branches).size).toBe(3);
+    expect(branches[1]).toBe('chorus/s/dev-2');
+  });
+});
+
+describe('workersReleaseVerifier', () => {
+  it('releases only after every worker has run and gone idle', () => {
+    expect(
+      workersReleaseVerifier([
+        { hasRun: true, status: 'idle' },
+        { hasRun: true, status: 'idle' },
+      ]),
+    ).toBe(true);
+    expect(
+      workersReleaseVerifier([
+        { hasRun: true, status: 'idle' },
+        { hasRun: false, status: 'idle' },
+      ]),
+    ).toBe(false);
+    expect(workersReleaseVerifier([])).toBe(false);
   });
 });

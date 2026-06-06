@@ -20,6 +20,49 @@ export function shellLaunchArgs(
     : ['-l', '-i', '-c', command];
 }
 
+/** Claude permission posture. 'default' keeps approval prompts; the others skip them. */
+export type AgentPermissionMode = 'default' | 'permissionless' | 'auto-edit';
+
+export interface ClaudeLaunchConfig {
+  /** Positional first-turn prompt. Auto-submits, stays interactive. Omit for a blank session. */
+  prompt?: string;
+  /** Appended to the system prompt (role/context framing). */
+  systemPrompt?: string;
+  /** e.g. 'opus'. */
+  model?: string;
+  /** Default 'default'. 'permissionless'|'auto-edit' add --dangerously-skip-permissions. */
+  permissionMode?: AgentPermissionMode;
+  /** Optional --resume <uuid>. */
+  resumeSessionId?: string;
+}
+
+/** POSIX single-quote escaping (wrap in '...', escape embedded quotes). */
+export function shellEscape(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Build the `claude …` command string. The prompt is passed as a positional arg
+ * after `--` (auto-submits as the first user turn, stays interactive — NOT
+ * -p/--print). The host's withClaudeHooks() still injects `--settings` right
+ * after `claude`; flags land before `--`, the positional stays after, so the
+ * ordering survives. Mirrors agent-orchestrator's getLaunchCommand (MIT).
+ */
+export function buildClaudeLaunch(config: ClaudeLaunchConfig = {}): string {
+  const parts: string[] = ['claude'];
+  const mode = config.permissionMode ?? 'default';
+  if (mode === 'permissionless' || mode === 'auto-edit') {
+    parts.push('--dangerously-skip-permissions');
+  }
+  if (config.model) parts.push('--model', shellEscape(config.model));
+  if (config.resumeSessionId) parts.push('--resume', shellEscape(config.resumeSessionId));
+  if (config.systemPrompt) {
+    parts.push('--append-system-prompt', shellEscape(config.systemPrompt));
+  }
+  if (config.prompt) parts.push('--', shellEscape(config.prompt));
+  return parts.join(' ');
+}
+
 /**
  * If `command` invokes `claude`, inject `--settings <path>` so the session
  * loads the status hooks (PRD §5.4). The host writes the settings file and

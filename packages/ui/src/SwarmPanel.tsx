@@ -1,12 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { SessionStatus, Workspace } from '@app/core';
 import { StatusBadge } from './StatusBadge.js';
 
 export interface SwarmPanelProps {
   workspace: Workspace;
   statusOf: (sessionId: string) => SessionStatus | null;
-  /** True when a real shared blackboard dir can be created (Electron). */
-  sharedDirAvailable: boolean;
+  /** True when each agent can get its own git worktree + branch (Electron). */
+  worktreesAvailable: boolean;
+  /** Probe whether a directory is a git repo (for worktree-isolation guidance). */
+  checkGitRepo: (dir: string) => Promise<boolean>;
   onClose: () => void;
   onBroadcast: (sessionIds: string[], text: string, submit: boolean) => void;
   onCreateSwarm: (
@@ -20,7 +22,7 @@ export interface SwarmPanelProps {
   onFanOut: (
     name: string,
     task: string,
-    workers: { role: string; task: string }[],
+    workers: { role: string; task: string; dir?: string }[],
     verifier: { task: string } | null,
     autoStart: boolean,
     dir: string,
@@ -97,20 +99,55 @@ export function SwarmPanel(props: SwarmPanelProps) {
   const [foDir, setFoDir] = useState('');
   const [foName, setFoName] = useState('');
   const [foTask, setFoTask] = useState('');
-  const [foWorkers, setFoWorkers] = useState<{ role: string; task: string }[]>([
-    { role: 'frontend', task: '' },
-    { role: 'backend', task: '' },
-    { role: 'tests', task: '' },
+  // Each worker may override its directory (its own repo); empty = the default
+  // directory above. Lets one swarm span several repos (e.g. a frontend repo and
+  // a separate backend repo, one agent each).
+  const [foWorkers, setFoWorkers] = useState<
+    { role: string; task: string; dir: string }[]
+  >([
+    { role: 'frontend', task: '', dir: '' },
+    { role: 'backend', task: '', dir: '' },
+    { role: 'tests', task: '', dir: '' },
   ]);
   const [foVerifier, setFoVerifier] = useState(false);
   const [foVerifierTask, setFoVerifierTask] = useState('');
   const [foAutoStart, setFoAutoStart] = useState(true);
-  const defaultVerifierPrompt = props.sharedDirAvailable
-    ? 'You are the verifier. The other agents have finished. Review their output via the shared blackboard (CHORUS_SWARM.md) and the files they changed, check correctness, run or inspect the tests, and record any issues in the Log.'
+  const defaultVerifierPrompt = props.worktreesAvailable
+    ? 'You are the verifier. The other agents have finished, each on its own git branch. Review the changes on those branches for correctness, run or inspect the tests, and report any issues.'
     : 'You are the verifier. The other agents have finished. Review their output by reading the other panes / asking the human, check correctness, run or inspect the tests, and report any issues.';
   const validWorkers = foWorkers.filter((w) => w.role.trim());
   const maxWorkers = foVerifier ? 5 : 6;
   const dirReady = foDir.trim().length > 0;
+
+  // Live git-repo check on the chosen directory: worktree isolation needs a repo.
+  // Debounced so we don't probe on every keystroke. Only runs when the host can
+  // create worktrees (desktop); on web the static note below covers it.
+  const { checkGitRepo, worktreesAvailable } = props;
+  const [gitState, setGitState] = useState<
+    'unknown' | 'checking' | 'repo' | 'norepo'
+  >('unknown');
+  useEffect(() => {
+    const dir = foDir.trim();
+    if (!worktreesAvailable || !dir) {
+      setGitState('unknown');
+      return;
+    }
+    setGitState('checking');
+    let cancelled = false;
+    const h = setTimeout(() => {
+      checkGitRepo(dir)
+        .then((ok) => {
+          if (!cancelled) setGitState(ok ? 'repo' : 'norepo');
+        })
+        .catch(() => {
+          if (!cancelled) setGitState('unknown');
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(h);
+    };
+  }, [foDir, worktreesAvailable, checkGitRepo]);
 
   return (
     <div
@@ -267,9 +304,9 @@ export function SwarmPanel(props: SwarmPanelProps) {
           <div style={sectionTitle}>Fan out a task</div>
           <div style={muted}>
             Give each agent its own task; they auto-start in parallel
-            {props.sharedDirAvailable
-              ? ' and coordinate through a shared blackboard file.'
-              : '. (A shared blackboard needs the desktop app — here the agents coordinate via you.)'}
+            {props.worktreesAvailable
+              ? ', each isolated in its own git worktree + branch.'
+              : '. (Isolated git worktrees need the desktop app + a git repo — here the agents share the directory.)'}
             {' '}This replaces the current workspace layout.
           </div>
           <label style={{ ...muted, color: 'var(--fg)' }}>Directory path (required)</label>
@@ -281,6 +318,27 @@ export function SwarmPanel(props: SwarmPanelProps) {
           />
           {!dirReady && (
             <div style={muted}>Enter a directory to enable the rest of the form.</div>
+          )}
+          {dirReady && worktreesAvailable && gitState === 'checking' && (
+            <div style={muted}>Checking for a git repository…</div>
+          )}
+          {dirReady && worktreesAvailable && gitState === 'repo' && (
+            <div style={{ ...muted, color: 'var(--status-idle, #5ad17a)' }}>
+              ✓ Git repo — each agent gets its own worktree + branch.
+            </div>
+          )}
+          {dirReady && worktreesAvailable && gitState === 'norepo' && (
+            <div style={{ ...muted, color: 'var(--status-waiting)' }}>
+              ⚠ Not a git repository. The agents will share this folder (no
+              per-agent worktrees, so their edits can collide). Run{' '}
+              <code>git init</code> here first for isolated branches.
+            </div>
+          )}
+          {dirReady && !worktreesAvailable && (
+            <div style={muted}>
+              Isolated git worktrees need the desktop app — the agents will share
+              this folder.
+            </div>
           )}
           <div
             style={{
@@ -338,12 +396,20 @@ export function SwarmPanel(props: SwarmPanelProps) {
                   rows={2}
                   style={{ ...input, resize: 'vertical' }}
                 />
+                <input
+                  value={w.dir}
+                  onChange={(e) =>
+                    setFoWorkers((p) => p.map((x, j) => (j === i ? { ...x, dir: e.target.value } : x)))
+                  }
+                  placeholder="this agent's directory (optional — its own repo; defaults to above)"
+                  style={{ ...input, fontSize: 11 }}
+                />
               </div>
             ))}
           </div>
           <button
             style={{ ...ghost, alignSelf: 'flex-start' }}
-            onClick={() => setFoWorkers((p) => (p.length >= maxWorkers ? p : [...p, { role: '', task: '' }]))}
+            onClick={() => setFoWorkers((p) => (p.length >= maxWorkers ? p : [...p, { role: '', task: '', dir: '' }]))}
             disabled={foWorkers.length >= maxWorkers}
             title={`Up to ${maxWorkers} worker agents`}
           >
@@ -389,7 +455,11 @@ export function SwarmPanel(props: SwarmPanelProps) {
                 props.onFanOut(
                   foName.trim(),
                   foTask.trim(),
-                  validWorkers.map((w) => ({ role: w.role.trim(), task: w.task })),
+                  validWorkers.map((w) => ({
+                    role: w.role.trim(),
+                    task: w.task,
+                    dir: w.dir.trim() || undefined,
+                  })),
                   foVerifier ? { task: foVerifierTask } : null,
                   foAutoStart,
                   foDir.trim(),

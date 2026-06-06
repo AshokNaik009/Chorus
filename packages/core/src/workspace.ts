@@ -183,8 +183,7 @@ function isSwarmMember(v: unknown): v is SwarmMember {
   const m = v as Record<string, unknown>;
   return (
     typeof m.sessionId === 'string' &&
-    (m.role === undefined || typeof m.role === 'string') &&
-    (m.seedPrompt === undefined || typeof m.seedPrompt === 'string')
+    (m.role === undefined || typeof m.role === 'string')
   );
 }
 

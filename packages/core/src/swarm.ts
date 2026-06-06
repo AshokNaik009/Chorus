@@ -7,7 +7,7 @@
  * The broadcast targeting, role-seed templating, and blackboard document are pure
  * and unit-tested here; only creating the shared directory needs the host.
  */
-import type { SessionStatus, SwarmDef, SwarmMember } from './models.js';
+import type { SwarmDef, SwarmMember } from './models.js';
 
 /** Ctrl-C — sent to every member by "Stop all" (US-10.5). */
 export const SWARM_INTERRUPT = '\x03';
@@ -163,40 +163,12 @@ export function buildAgentSystemPrompt(
       ? 'You have your own isolated git branch and worktree here; commit your changes when you finish.'
       : 'You share this directory with the other agents, so stay within your assigned task and files to avoid overwriting their work.',
   );
-  return parts.join(' ');
-}
-
-/**
- * The verifier's positional prompt, built once the workers finish. The user's
- * (possibly edited) instructions form the body; the worker branches are appended
- * so the verifier knows where to look for their committed work.
- */
-export function buildVerifierTask(
-  userTask: string | undefined,
-  branches: string[],
-): string {
-  const base =
-    userTask?.trim() ||
-    'You are the verifier. The other agents have finished their work. Review it for correctness, run or inspect the tests, and report any issues you find.';
-  if (branches.length === 0) return base;
-  return `${base} The worker agents committed their work on these git branches: ${branches.join(
-    ', ',
-  )}. Review the changes on those branches.`;
-}
-
-/**
- * The gate for the verifier: release it only once every worker has actually run
- * (entered `running`) and then settled back to `idle`. `hasRun` is essential —
- * without it the initial post-spawn idle would release the verifier before any
- * work happened.
- */
-export function workersReleaseVerifier(
-  workers: { hasRun: boolean; status: SessionStatus }[],
-): boolean {
-  return (
-    workers.length > 0 &&
-    workers.every((w) => w.hasRun && w.status === 'idle')
+  // Self-verification replaces the old separate verifier agent: each agent owns
+  // the correctness of its own slice.
+  parts.push(
+    'If your task involves writing or changing code, also write and run appropriate tests (or otherwise verify your work) and make sure it meets the acceptance criteria before you finish. Do not report done until you have verified it.',
   );
+  return parts.join(' ');
 }
 
 /**

@@ -38,20 +38,13 @@ export type LayoutNode =
     }
   | { type: 'pane'; sessionId: string };
 
-/** One agent in a swarm: a session plus its role + seed prompt (PRD Epic 10). */
+/** One agent in a swarm: a session plus its role + task (PRD Epic 10). */
 export interface SwarmMember {
   sessionId: string;
   /** 'frontend' | 'backend' | 'tests' | free text. */
   role?: string;
-  /** This agent's individual task, woven into its seed prompt. */
+  /** This agent's individual task. */
   task?: string;
-  /** Full seed override; when set, replaces the templated prompt entirely. */
-  seedPrompt?: string;
-  /**
-   * Gated members (the verifier) do not auto-start with the others — they are
-   * released only after every non-gated member has finished (PRD Epic 10).
-   */
-  gated?: boolean;
 }
 
 /**

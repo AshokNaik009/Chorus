@@ -23,7 +23,6 @@ export interface SwarmPanelProps {
     name: string,
     task: string,
     workers: { role: string; task: string; dir?: string }[],
-    verifier: { task: string } | null,
     autoStart: boolean,
     dir: string,
   ) => void;
@@ -109,14 +108,9 @@ export function SwarmPanel(props: SwarmPanelProps) {
     { role: 'backend', task: '', dir: '' },
     { role: 'tests', task: '', dir: '' },
   ]);
-  const [foVerifier, setFoVerifier] = useState(false);
-  const [foVerifierTask, setFoVerifierTask] = useState('');
   const [foAutoStart, setFoAutoStart] = useState(true);
-  const defaultVerifierPrompt = props.worktreesAvailable
-    ? 'You are the verifier. The other agents have finished, each on its own git branch. Review the changes on those branches for correctness, run or inspect the tests, and report any issues.'
-    : 'You are the verifier. The other agents have finished. Review their output by reading the other panes / asking the human, check correctness, run or inspect the tests, and report any issues.';
   const validWorkers = foWorkers.filter((w) => w.role.trim());
-  const maxWorkers = foVerifier ? 5 : 6;
+  const maxWorkers = 6;
   const dirReady = foDir.trim().length > 0;
 
   // Live git-repo check on the chosen directory: worktree isolation needs a repo.
@@ -416,27 +410,10 @@ export function SwarmPanel(props: SwarmPanelProps) {
             + agent
           </button>
 
-          <label style={{ ...muted, display: 'flex', gap: 6, alignItems: 'center' }}>
-            <input
-              type="checkbox"
-              checked={foVerifier}
-              onChange={(e) => {
-                const on = e.target.checked;
-                setFoVerifier(on);
-                if (on && !foVerifierTask.trim()) setFoVerifierTask(defaultVerifierPrompt);
-              }}
-            />
-            Add a verifier agent (runs after the others finish)
-          </label>
-          {foVerifier && (
-            <textarea
-              value={foVerifierTask}
-              onChange={(e) => setFoVerifierTask(e.target.value)}
-              placeholder="verifier instructions…"
-              rows={3}
-              style={{ ...input, resize: 'vertical' }}
-            />
-          )}
+          <div style={muted}>
+            Each agent is told to verify its own work (write/run tests, meet the
+            acceptance criteria) before finishing — there is no separate verifier.
+          </div>
 
           <label style={{ ...muted, display: 'flex', gap: 6, alignItems: 'center' }}>
             <input
@@ -444,7 +421,7 @@ export function SwarmPanel(props: SwarmPanelProps) {
               checked={foAutoStart}
               onChange={(e) => setFoAutoStart(e.target.checked)}
             />
-            Auto-start agents (send Enter when each pane is ready)
+            Auto-start agents (run hands-off, skipping approval prompts)
           </label>
 
           <div style={{ display: 'flex', gap: 8 }}>
@@ -460,14 +437,13 @@ export function SwarmPanel(props: SwarmPanelProps) {
                     task: w.task,
                     dir: w.dir.trim() || undefined,
                   })),
-                  foVerifier ? { task: foVerifierTask } : null,
                   foAutoStart,
                   foDir.trim(),
                 );
                 props.onClose();
               }}
             >
-              Fan out {validWorkers.length + (foVerifier ? 1 : 0)} agents
+              Fan out {validWorkers.length} agents
             </button>
           </div>
           </div>

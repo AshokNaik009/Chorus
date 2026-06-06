@@ -12,14 +12,6 @@ import {
 export interface Session {
   config: SessionConfig;
   status: SessionStatus;
-  /**
-   * Count of completed turns, i.e. authoritative `idle` (Claude Stop) hooks
-   * seen. 0 until the agent finishes its first turn. Used by swarm fan-out to
-   * gate the verifier: a CLI-arg-launched agent never enters `running` (no
-   * `submit` write, and Claude has no running hook), so "has it finished a
-   * turn?" must be read from Stop hooks, not the status.
-   */
-  turnsCompleted: number;
 }
 
 export interface SpawnExtras {
@@ -88,15 +80,12 @@ export class SessionManager {
     return [...this.sessions.values()].map((s) => ({
       config: { ...s.config },
       status: s.status,
-      turnsCompleted: s.turnsCompleted,
     }));
   }
 
   get(sessionId: string): Session | undefined {
     const s = this.sessions.get(sessionId);
-    return s
-      ? { config: { ...s.config }, status: s.status, turnsCompleted: s.turnsCompleted }
-      : undefined;
+    return s ? { config: { ...s.config }, status: s.status } : undefined;
   }
 
   has(sessionId: string): boolean {
@@ -111,11 +100,7 @@ export class SessionManager {
     const id = config.sessionId;
     if (this.sessions.has(id)) return;
 
-    this.sessions.set(id, {
-      config: { ...config },
-      status: 'spawning',
-      turnsCompleted: 0,
-    });
+    this.sessions.set(id, { config: { ...config }, status: 'spawning' });
     const state: Internal = {
       scanner: new OscStatusScanner(),
       output: this.internal.get(id)?.output ?? new Emitter<string>(),
@@ -181,15 +166,7 @@ export class SessionManager {
   applyHookStatus(sessionId: string, status: HookStatus): void {
     // Hooks are authoritative; cancel any pending fallback transition.
     this.clearQuietTimer(sessionId);
-    const s = this.sessions.get(sessionId);
-    const prev = s?.status;
-    // A Stop hook (idle) marks a completed turn. Count it even when the status
-    // doesn't change — an agent often already reads `idle` (from the first-render
-    // heuristic) when its turn ends, so the Stop would otherwise emit nothing,
-    // and swarm gating would never see the turn finish.
-    if (status === 'idle' && s) s.turnsCompleted += 1;
     this.dispatch(sessionId, { type: 'hook', status });
-    if (status === 'idle' && s && prev === 'idle') this.emitChange();
   }
 
   kill(sessionId: string): void {

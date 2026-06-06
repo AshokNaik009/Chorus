@@ -4,6 +4,7 @@ import {
   broadcastTo,
   buildAgentSystemPrompt,
   buildClaudeLaunch,
+  buildGrid,
   buildRow,
   buildTemplate,
   buildVerifierTask,
@@ -35,7 +36,6 @@ import {
   type ImportMode,
   type ImportResult,
   type LayoutNode,
-  type LayoutTemplate,
   type Persistence,
   type Session,
   type SessionArchive,
@@ -93,14 +93,8 @@ export interface AppProps {
   swarmWorkspace?: SwarmWorkspace;
 }
 
-const TEMPLATES: LayoutTemplate[] = [1, 2, 3, 4, 6];
-const TEMPLATE_LABELS: Record<LayoutTemplate, string> = {
-  1: '1',
-  2: '1×2',
-  3: '1×3',
-  4: '2×2',
-  6: '2×3',
-};
+/** Simplified manual layout: just pick how many terminals (1–6). */
+const TERMINAL_COUNTS = [1, 2, 3, 4, 5, 6];
 
 const SAVE_DEBOUNCE_MS = 400;
 
@@ -141,6 +135,13 @@ export function App({
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [maximizedId, setMaximizedId] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // A pending destructive action awaiting confirmation (only raised when live
+  // sessions would be lost). Cleared on confirm/cancel.
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    message: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   const handles = useRef(new Map<string, TerminalPaneHandle>());
 
@@ -220,6 +221,37 @@ export function App({
   );
 
   const active = state ? getActiveWorkspace(state) : undefined;
+  const swarmMode = active?.mode === 'swarm';
+
+  // How many of a workspace's sessions are actively working (running/waiting) —
+  // the only states whose loss warrants a confirmation. Idle/exited don't.
+  const runningCount = useCallback(
+    (ws: Workspace | undefined): number =>
+      ws
+        ? ws.sessions.filter((s) => {
+            const st = statusById.get(s.sessionId);
+            return st === 'running' || st === 'waiting';
+          }).length
+        : 0,
+    [statusById],
+  );
+
+  // Run `action`, but if the active workspace has live work, confirm first.
+  const guardActive = useCallback(
+    (verb: string, confirmLabel: string, action: () => void) => {
+      const n = runningCount(active);
+      if (n > 0) {
+        setPendingConfirm({
+          message: `${n} session${n > 1 ? 's are' : ' is'} still active and will be stopped. ${verb}`,
+          confirmLabel,
+          onConfirm: action,
+        });
+      } else {
+        action();
+      }
+    },
+    [active, runningCount],
+  );
 
   // ---- workspace handlers ----
 
@@ -245,24 +277,37 @@ export function App({
   const closeWorkspace = (id: string) => {
     if (!state) return;
     const ws = state.workspaces.find((w) => w.id === id);
-    const next = removeWorkspace(state, id);
-    // Update state FIRST so the removal always lands, then tear down PTYs — a
-    // throw in backend.kill can never strand the workspace in the sidebar.
-    setState(next);
-    setFocusedId(null);
-    setMaximizedId(null);
-    cleanupWorktrees();
-    if (ws) {
-      for (const s of ws.sessions) {
-        try {
-          manager.remove(s.sessionId);
-        } catch {
-          /* PTY already gone */
+    const doClose = () => {
+      const next = removeWorkspace(state, id);
+      // Update state FIRST so the removal always lands, then tear down PTYs — a
+      // throw in backend.kill can never strand the workspace in the sidebar.
+      setState(next);
+      setFocusedId(null);
+      setMaximizedId(null);
+      if (ws?.id === active?.id) cleanupWorktrees();
+      if (ws) {
+        for (const s of ws.sessions) {
+          try {
+            manager.remove(s.sessionId);
+          } catch {
+            /* PTY already gone */
+          }
         }
       }
+      const nextActive = getActiveWorkspace(next);
+      if (nextActive) ensureSpawned(nextActive);
+    };
+    // Confirm only if THIS workspace has live work (it may not be the active one).
+    const n = runningCount(ws);
+    if (n > 0) {
+      setPendingConfirm({
+        message: `${n} session${n > 1 ? 's are' : ' is'} still active in "${ws?.name ?? 'this workspace'}" and will be stopped. Close it?`,
+        confirmLabel: 'Close workspace',
+        onConfirm: doClose,
+      });
+    } else {
+      doClose();
     }
-    const nextActive = getActiveWorkspace(next);
-    if (nextActive) ensureSpawned(nextActive);
   };
 
   const renameWorkspace = (id: string, name: string) => {
@@ -280,7 +325,9 @@ export function App({
 
   // ---- layout / session handlers (operate on the active workspace) ----
 
-  const selectTemplate = (n: LayoutTemplate) => {
+  // Lay out N empty terminals (manual mode). Tears down whatever was here —
+  // including a swarm — and returns the workspace to manual mode.
+  const setLayoutPanes = (n: number) => {
     if (!state || !active) return;
     for (const s of active.sessions) manager.remove(s.sessionId);
     handles.current.clear();
@@ -289,7 +336,8 @@ export function App({
     setQueuedVerifierId(null);
     setState(
       updateWorkspace(state, active.id, {
-        layout: buildTemplate(n),
+        mode: 'manual',
+        layout: buildGrid(n),
         sessions: [],
       }),
     );
@@ -360,9 +408,9 @@ export function App({
   };
 
   // Reset the active workspace to a clean single pane (recovery from a broken
-  // layout/view). Tears down this workspace's sessions, like selecting the
-  // 1-pane template.
-  const resetView = () => selectTemplate(1);
+  // layout/view, or the explicit way out of swarm mode). Tears down this
+  // workspace's sessions and returns to manual mode.
+  const resetView = () => setLayoutPanes(1);
 
   const renameSession = (sessionId: string, title: string) => {
     if (!state) return;
@@ -641,7 +689,7 @@ export function App({
     [state, active],
   );
 
-  const fanOut = useCallback(
+  const runFanOut = useCallback(
     async (
       name: string,
       task: string,
@@ -746,6 +794,7 @@ export function App({
         cwd: m.gated ? defaultDir : workerCwds[i],
       }));
       let next = updateWorkspace(state, active.id, {
+        mode: 'swarm',
         layout: buildRow(ids),
         sessions: configs,
       });
@@ -814,6 +863,34 @@ export function App({
     },
     [state, active, manager, swarmWorkspace, cleanupWorktrees],
   );
+
+  // Fan out, confirming first if the current workspace has live work (the swarm
+  // replaces the whole layout).
+  const fanOut = useCallback(
+    (
+      name: string,
+      task: string,
+      workers: { role: string; task: string; dir?: string }[],
+      verifier: { task: string } | null,
+      autoStart: boolean,
+      dir: string,
+    ) => {
+      guardActive(
+        'Replace the current terminals with this swarm?',
+        'Fan out',
+        () => void runFanOut(name, task, workers, verifier, autoStart, dir),
+      );
+    },
+    [guardActive, runFanOut],
+  );
+
+  // Explicit exit from swarm "board mode": tear the swarm down and return to a
+  // clean manual single pane (confirming if agents are still working).
+  // setLayoutPanes already clears the worktrees, verifier gate, and mode.
+  const endSwarm = () =>
+    guardActive('End the swarm and return to manual terminals?', 'End swarm', () =>
+      setLayoutPanes(1),
+    );
 
   // Defer-spawn the verifier off worker turn-completion: once every worker has
   // finished its first turn (a Stop hook → `turnsCompleted >= 1`) or exited,
@@ -1059,47 +1136,100 @@ export function App({
           >
             {active.name}
           </span>
-          <span style={{ color: 'var(--fg-muted)', fontSize: 12 }}>Layout</span>
-          <div style={{ display: 'flex', gap: 4 }}>
-            {TEMPLATES.map((n) => {
-              const selected = paneCount === n;
-              return (
-                <button
-                  key={n}
-                  onClick={() => selectTemplate(n)}
-                  title={`${n}-pane layout`}
-                  style={{
-                    background: selected ? 'var(--accent)' : 'var(--bg)',
-                    color: selected ? '#0e1116' : 'var(--fg)',
-                    border: '1px solid',
-                    borderColor: selected ? 'var(--accent)' : 'var(--border)',
-                    borderRadius: 6,
-                    padding: '4px 12px',
-                    cursor: 'pointer',
-                    fontFamily: 'inherit',
-                    fontWeight: selected ? 600 : 400,
-                  }}
-                >
-                  {TEMPLATE_LABELS[n]}
-                </button>
-              );
-            })}
-          </div>
-          <button
-            onClick={resetView}
-            title="Reset to a single clean pane (recover a broken view)"
-            style={{
-              background: 'var(--bg)',
-              color: 'var(--fg)',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              padding: '4px 12px',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            ↺ Reset
-          </button>
+          {swarmMode ? (
+            <>
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: 'var(--accent)',
+                  border: '1px solid var(--accent)',
+                  borderRadius: 6,
+                  padding: '3px 10px',
+                }}
+                title="This workspace is running a swarm. Manual terminal controls are locked."
+              >
+                ⚇ Swarm active
+              </span>
+              <button
+                onClick={endSwarm}
+                title="Tear down the swarm and return to manual terminals"
+                style={{
+                  background: 'var(--bg)',
+                  color: 'var(--fg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  padding: '4px 12px',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                End swarm
+              </button>
+            </>
+          ) : (
+            <>
+              <label
+                htmlFor="terminal-count"
+                style={{ color: 'var(--fg-muted)', fontSize: 12 }}
+              >
+                Terminals
+              </label>
+              <select
+                id="terminal-count"
+                value={paneCount}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  if (n === paneCount) return;
+                  guardActive(
+                    `Lay out ${n} terminal${n > 1 ? 's' : ''}?`,
+                    'Change layout',
+                    () => setLayoutPanes(n),
+                  );
+                }}
+                title="How many terminals to lay out"
+                style={{
+                  background: 'var(--bg)',
+                  color: 'var(--fg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  padding: '4px 8px',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                {TERMINAL_COUNTS.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() =>
+                  guardActive(
+                    'Reset to a single clean pane?',
+                    'Reset',
+                    () => resetView(),
+                  )
+                }
+                title="Reset to a single clean pane (recover a broken view)"
+                style={{
+                  background: 'var(--bg)',
+                  color: 'var(--fg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  padding: '4px 12px',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                ↺ Reset
+              </button>
+            </>
+          )}
           <div
             style={{
               marginLeft: 'auto',
@@ -1231,6 +1361,80 @@ export function App({
           }}
         >
           {voice.error} · click to dismiss
+        </div>
+      )}
+
+      {pendingConfirm && (
+        <div
+          onClick={() => setPendingConfirm(null)}
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 70,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border)',
+              borderRadius: 10,
+              padding: 20,
+              width: 420,
+              maxWidth: '92%',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 16,
+              color: 'var(--fg)',
+            }}
+          >
+            <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+              {pendingConfirm.message}
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setPendingConfirm(null)}
+                style={{
+                  background: 'var(--bg)',
+                  color: 'var(--fg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  padding: '7px 14px',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                  fontSize: 12,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const action = pendingConfirm.onConfirm;
+                  setPendingConfirm(null);
+                  action();
+                }}
+                style={{
+                  background: 'var(--status-waiting)',
+                  color: '#1a1a1a',
+                  border: 'none',
+                  borderRadius: 6,
+                  padding: '7px 14px',
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                  fontFamily: 'inherit',
+                  fontSize: 12,
+                }}
+              >
+                {pendingConfirm.confirmLabel}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

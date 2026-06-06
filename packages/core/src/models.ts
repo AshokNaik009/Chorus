@@ -79,6 +79,13 @@ export interface Workspace {
   name: string;
   /** New panes prefill this cwd; each pane may override it. */
   defaultCwd: string;
+  /**
+   * How the workspace was populated: 'manual' (user-chosen terminal grid) or
+   * 'swarm' (one pane per fan-out agent). While 'swarm', the manual layout
+   * controls are locked — leaving the swarm is an explicit action. Absent on
+   * older saves; treated as 'manual'.
+   */
+  mode?: 'manual' | 'swarm';
   layout: LayoutNode;
   /** Configs for panes that have been started (a pane may exist unstarted). */
   sessions: SessionConfig[];

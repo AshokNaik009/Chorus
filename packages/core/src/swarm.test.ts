@@ -3,12 +3,12 @@ import {
   broadcastTargets,
   broadcastTo,
   buildAgentSystemPrompt,
-  buildVerifierTask,
+  clampSwarmWorkers,
   formatBroadcast,
+  MAX_SWARM_AGENTS,
   planAgentWorktrees,
   SWARM_INTERRUPT,
   SwarmOrchestrator,
-  workersReleaseVerifier,
   type SwarmWriter,
 } from './swarm.js';
 import type { SwarmDef } from './models.js';
@@ -35,6 +35,22 @@ class RecordingWriter implements SwarmWriter {
     this.writes.push({ sessionId, data });
   }
 }
+
+describe('clampSwarmWorkers', () => {
+  const mk = (n: number) => Array.from({ length: n }, (_, i) => i);
+
+  it('caps at MAX_SWARM_AGENTS (the 6-pane layout limit)', () => {
+    expect(MAX_SWARM_AGENTS).toBe(6);
+    expect(clampSwarmWorkers(mk(9))).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  it('returns the same list when at or under the cap', () => {
+    const six = mk(6);
+    expect(clampSwarmWorkers(six)).toBe(six);
+    expect(clampSwarmWorkers(mk(3))).toEqual([0, 1, 2]);
+    expect(clampSwarmWorkers([])).toEqual([]);
+  });
+});
 
 describe('broadcastTargets', () => {
   it('returns every member with no allow-list', () => {
@@ -118,6 +134,7 @@ describe('buildAgentSystemPrompt', () => {
     expect(sp).toContain('/work/feature-x/frontend');
     expect(sp).toContain('relative paths');
     expect(sp).toContain('isolated git branch');
+    expect(sp).toContain('acceptance criteria');
   });
 
   it('tells a shared-dir agent the truth (no worktree) and still pins the dir', () => {
@@ -126,18 +143,6 @@ describe('buildAgentSystemPrompt', () => {
     expect(sp).toContain('/tmp/shared');
     expect(sp).toContain('share this directory');
     expect(sp).not.toContain('isolated git branch');
-  });
-});
-
-describe('buildVerifierTask', () => {
-  it('uses the default body and appends the worker branches', () => {
-    const t = buildVerifierTask(undefined, ['chorus/x/a', 'chorus/x/b']);
-    expect(t).toContain('verifier');
-    expect(t).toContain('chorus/x/a, chorus/x/b');
-  });
-
-  it('honors a user override and omits the branch line when none', () => {
-    expect(buildVerifierTask('Just check the build.', [])).toBe('Just check the build.');
   });
 });
 
@@ -154,23 +159,5 @@ describe('planAgentWorktrees', () => {
     const branches = plan.map((p) => p.branch);
     expect(new Set(branches).size).toBe(3);
     expect(branches[1]).toBe('chorus/s/dev-2');
-  });
-});
-
-describe('workersReleaseVerifier', () => {
-  it('releases only after every worker has run and gone idle', () => {
-    expect(
-      workersReleaseVerifier([
-        { hasRun: true, status: 'idle' },
-        { hasRun: true, status: 'idle' },
-      ]),
-    ).toBe(true);
-    expect(
-      workersReleaseVerifier([
-        { hasRun: true, status: 'idle' },
-        { hasRun: false, status: 'idle' },
-      ]),
-    ).toBe(false);
-    expect(workersReleaseVerifier([])).toBe(false);
   });
 });

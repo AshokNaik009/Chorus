@@ -4,9 +4,10 @@ import {
   broadcastTo,
   buildAgentSystemPrompt,
   buildClaudeLaunch,
+  buildHandoffBrief,
+  buildGrid,
   buildRow,
   buildTemplate,
-  buildVerifierTask,
   buildWorkspaceBundle,
   collectSessionIds,
   countPanes,
@@ -15,6 +16,7 @@ import {
   createWorkspace,
   DEFAULT_VOICE_SETTINGS,
   defaultWorkspaceState,
+  clampSwarmWorkers,
   getActiveWorkspace,
   planAgentWorktrees,
   reconcileImport,
@@ -30,12 +32,12 @@ import {
   updateWorkspace,
   upsertSession,
   upsertSwarm,
-  workersReleaseVerifier,
   type ChorusBundle,
+  type ClaudeLaunchConfig,
+  type ContextHealth,
   type ImportMode,
   type ImportResult,
   type LayoutNode,
-  type LayoutTemplate,
   type Persistence,
   type Session,
   type SessionArchive,
@@ -43,6 +45,7 @@ import {
   type SessionManager,
   type SessionStatus,
   type SwarmDef,
+  type SwarmMember,
   type SwarmWorkspace,
   type Transcriber,
   type TranscriberId,
@@ -55,6 +58,7 @@ import { Sidebar } from './Sidebar.js';
 import { SessionTerminal } from './SessionTerminal.js';
 import { PaneLauncher } from './PaneLauncher.js';
 import { StatusBadge } from './StatusBadge.js';
+import { ContextHealthBadge } from './ContextHealthBadge.js';
 import { MemoryControls, type ExportPayload } from './MemoryControls.js';
 import {
   RecordingIndicator,
@@ -65,6 +69,7 @@ import {
 } from './Voice.js';
 import { HelpButton } from './Tutorial.js';
 import { SwarmPanel } from './SwarmPanel.js';
+import { DiffReview, type ReviewMember } from './DiffReview.js';
 import { ErrorBoundary } from './ErrorBoundary.js';
 import type { TerminalPaneHandle } from './TerminalPane.js';
 
@@ -93,14 +98,8 @@ export interface AppProps {
   swarmWorkspace?: SwarmWorkspace;
 }
 
-const TEMPLATES: LayoutTemplate[] = [1, 2, 3, 4, 6];
-const TEMPLATE_LABELS: Record<LayoutTemplate, string> = {
-  1: '1',
-  2: '1×2',
-  3: '1×3',
-  4: '2×2',
-  6: '2×3',
-};
+/** Simplified manual layout: just pick how many terminals (1–6). */
+const TERMINAL_COUNTS = [1, 2, 3, 4, 5, 6];
 
 const SAVE_DEBOUNCE_MS = 400;
 
@@ -141,36 +140,49 @@ export function App({
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [maximizedId, setMaximizedId] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // A pending destructive action awaiting confirmation (only raised when live
+  // sessions would be lost). Cleared on confirm/cancel.
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    message: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   const handles = useRef(new Map<string, TerminalPaneHandle>());
 
   // Git worktrees created for the active swarm fan-out (Epic 10). Torn down on a
   // reset, workspace close, or the next fan-out so they don't accumulate.
   const activeWorktrees = useRef<{ repoDir: string; worktreeDir: string }[]>([]);
-  const cleanupWorktrees = useCallback(() => {
-    const wts = activeWorktrees.current;
-    activeWorktrees.current = [];
-    for (const wt of wts) {
-      void swarmWorkspace?.removeWorktree(wt.repoDir, wt.worktreeDir);
-    }
-  }, [swarmWorkspace]);
 
   // Re-spawn a workspace's saved sessions that aren't live yet. Idempotent:
-  // manager.spawn() no-ops on an id it already owns.
+  // manager.spawn() no-ops on an id it already owns. A pane with a saved Claude
+  // id relaunches with `--resume` ONLY when its transcript actually exists on
+  // disk (a pinned id whose conversation never started must use `--session-id`
+  // instead — `--resume` would error out). `liveClaudeIds` marks conversations
+  // already running in another pane: those resume with `--fork-session`, so an
+  // imported copy of a still-live session can never clobber the original.
   const ensureSpawned = useCallback(
-    (ws: Workspace) => {
+    async (ws: Workspace, opts?: { liveClaudeIds?: Set<string> }) => {
       for (const cfg of ws.sessions) {
-        if (!manager.has(cfg.sessionId)) {
-          // A pane with a captured Claude id (from a Layer-2 import) relaunches
-          // with `--resume` so it restores its prior conversation (PRD US-11.5).
-          const command = buildClaudeLaunch({
-            resumeSessionId: cfg.claudeSessionId,
-          });
-          void manager.spawn(cfg, { cols: 80, rows: 24 }, { command });
+        if (manager.has(cfg.sessionId)) continue;
+        let launch: ClaudeLaunchConfig = {};
+        const cid = cfg.claudeSessionId;
+        if (cid) {
+          const resumable = sessionArchive
+            ? await sessionArchive.hasConversation(cid, cfg.cwd)
+            : true; // no archive (web): keep the legacy always-resume behavior
+          launch = resumable
+            ? {
+                resumeSessionId: cid,
+                ...(opts?.liveClaudeIds?.has(cid) ? { forkSession: true } : {}),
+              }
+            : { sessionId: cid };
         }
+        const command = buildClaudeLaunch(launch);
+        void manager.spawn(cfg, { cols: 80, rows: 24 }, { command });
       }
     },
-    [manager],
+    [manager, sessionArchive],
   );
 
   // Mirror live sessions (config + status) out of the manager.
@@ -188,7 +200,7 @@ export function App({
       const initial = loaded ?? defaultWorkspaceState(defaultCwd);
       setState(initial);
       const active = getActiveWorkspace(initial);
-      if (active) ensureSpawned(active);
+      if (active) void ensureSpawned(active);
     });
     return () => {
       cancelled = true;
@@ -207,19 +219,149 @@ export function App({
     for (const s of live) m.set(s.config.sessionId, s.status);
     return m;
   }, [live]);
-  // Completed turns (Stop hooks) per session — the verifier gate reads this, not
-  // `status`, because CLI-arg agents never enter `running`.
-  const turnsById = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const s of live) m.set(s.config.sessionId, s.turnsCompleted);
-    return m;
-  }, [live]);
   const statusOf = useCallback(
     (id: string): SessionStatus | null => statusById.get(id) ?? null,
     [statusById],
   );
 
+  // ---- context-window health (context-rot writeup, parts 2–3) ----
+  // Per-pane occupancy read from each transcript JSONL via the SessionArchive.
+  // Electron-only (web injects no archive); polled, best-effort, never blocks.
+  const [healthById, setHealthById] = useState<Map<string, ContextHealth>>(
+    new Map(),
+  );
+  // pane sessionId -> captured Claude conversation id, so we resolve the
+  // transcript filename even before a Layer-2 import persists `claudeSessionId`.
+  const claudeIdCache = useRef(new Map<string, string>());
+  const claudeIdOf = useCallback(
+    (sessionId: string): string | undefined =>
+      (state ? findSession(state, sessionId)?.cfg.claudeSessionId : undefined) ??
+      claudeIdCache.current.get(sessionId),
+    [state],
+  );
+  // Persist a captured Claude id onto the pane's saved config the moment we
+  // learn it: exports then carry the EXACT id instead of guessing at export
+  // time, when the newest transcript in a cwd can belong to another pane (the
+  // root cause of the flaky import). Only fills panes that have no saved id.
+  const persistClaudeId = useCallback((paneId: string, cid: string) => {
+    setState((prev) => {
+      if (!prev) return prev;
+      let changed = false;
+      const workspaces = prev.workspaces.map((w) => {
+        const i = w.sessions.findIndex(
+          (s) => s.sessionId === paneId && !s.claudeSessionId,
+        );
+        if (i < 0) return w;
+        changed = true;
+        const sessions = w.sessions.slice();
+        sessions[i] = { ...sessions[i], claudeSessionId: cid };
+        return { ...w, sessions };
+      });
+      return changed ? { ...prev, workspaces } : prev;
+    });
+  }, []);
+
+  useEffect(() => {
+    const sa = sessionArchive;
+    if (!sa || !state) return;
+    let cancelled = false;
+    const poll = async () => {
+      const next = new Map<string, ContextHealth>();
+      for (const s of live) {
+        const id = s.config.sessionId;
+        const cwd = findSession(state, id)?.cfg.cwd ?? s.config.cwd;
+        let cid = claudeIdOf(id);
+        if (!cid) {
+          cid = (await sa.captureSessionId(id, cwd)) ?? undefined;
+          if (cid) {
+            claudeIdCache.current.set(id, cid);
+            persistClaudeId(id, cid);
+          }
+        }
+        if (!cid) continue;
+        const h = await sa.readContextHealth(cid, cwd);
+        if (h) next.set(id, h);
+      }
+      if (!cancelled) setHealthById(next);
+    };
+    void poll();
+    const timer = setInterval(() => void poll(), 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [sessionArchive, state, live, claudeIdOf, persistClaudeId]);
+
+  // Build + copy a handoff-brief scaffold for a pane that crossed the red line.
+  const handoff = useCallback(
+    (sessionId: string) => {
+      const health = healthById.get(sessionId);
+      if (!health) return;
+      const found = state ? findSession(state, sessionId) : null;
+      const brief = buildHandoffBrief({
+        title: found?.cfg.title,
+        cwd: found?.cfg.cwd ?? '',
+        sessionId: claudeIdOf(sessionId) ?? sessionId,
+        health,
+      });
+      void navigator.clipboard?.writeText(brief);
+    },
+    [healthById, state, claudeIdOf],
+  );
+
   const active = state ? getActiveWorkspace(state) : undefined;
+  const swarmMode = active?.mode === 'swarm';
+
+  // Tear down the swarm's git worktrees. Sweeps BOTH the in-memory list (this
+  // session's fan-out) AND the worktrees recorded on the active workspace's
+  // persisted swarm members — so a reload that lost the in-memory ref still
+  // tidies up. removeWorktree is prune-first/idempotent, so the overlap is safe.
+  const cleanupWorktrees = useCallback(() => {
+    const seen = new Set<string>();
+    const sweep = (repoDir: string, worktreeDir: string) => {
+      if (!repoDir || !worktreeDir || seen.has(worktreeDir)) return;
+      seen.add(worktreeDir);
+      void swarmWorkspace?.removeWorktree(repoDir, worktreeDir);
+    };
+    const wts = activeWorktrees.current;
+    activeWorktrees.current = [];
+    for (const wt of wts) sweep(wt.repoDir, wt.worktreeDir);
+    for (const sw of active?.swarms ?? []) {
+      for (const m of sw.members) {
+        if (m.repoDir && m.worktreeDir) sweep(m.repoDir, m.worktreeDir);
+      }
+    }
+  }, [swarmWorkspace, active]);
+
+  // How many of a workspace's sessions are actively working (running/waiting) —
+  // the only states whose loss warrants a confirmation. Idle/exited don't.
+  const runningCount = useCallback(
+    (ws: Workspace | undefined): number =>
+      ws
+        ? ws.sessions.filter((s) => {
+            const st = statusById.get(s.sessionId);
+            return st === 'running' || st === 'waiting';
+          }).length
+        : 0,
+    [statusById],
+  );
+
+  // Run `action`, but if the active workspace has live work, confirm first.
+  const guardActive = useCallback(
+    (verb: string, confirmLabel: string, action: () => void) => {
+      const n = runningCount(active);
+      if (n > 0) {
+        setPendingConfirm({
+          message: `${n} session${n > 1 ? 's are' : ' is'} still active and will be stopped. ${verb}`,
+          confirmLabel,
+          onConfirm: action,
+        });
+      } else {
+        action();
+      }
+    },
+    [active, runningCount],
+  );
 
   // ---- workspace handlers ----
 
@@ -227,7 +369,7 @@ export function App({
     if (!state) return;
     setState(setActiveWorkspace(state, id));
     const ws = state.workspaces.find((w) => w.id === id);
-    if (ws) ensureSpawned(ws);
+    if (ws) void ensureSpawned(ws);
     setFocusedId(null);
     setMaximizedId(null);
   };
@@ -245,24 +387,37 @@ export function App({
   const closeWorkspace = (id: string) => {
     if (!state) return;
     const ws = state.workspaces.find((w) => w.id === id);
-    const next = removeWorkspace(state, id);
-    // Update state FIRST so the removal always lands, then tear down PTYs — a
-    // throw in backend.kill can never strand the workspace in the sidebar.
-    setState(next);
-    setFocusedId(null);
-    setMaximizedId(null);
-    cleanupWorktrees();
-    if (ws) {
-      for (const s of ws.sessions) {
-        try {
-          manager.remove(s.sessionId);
-        } catch {
-          /* PTY already gone */
+    const doClose = () => {
+      const next = removeWorkspace(state, id);
+      // Update state FIRST so the removal always lands, then tear down PTYs — a
+      // throw in backend.kill can never strand the workspace in the sidebar.
+      setState(next);
+      setFocusedId(null);
+      setMaximizedId(null);
+      if (ws?.id === active?.id) cleanupWorktrees();
+      if (ws) {
+        for (const s of ws.sessions) {
+          try {
+            manager.remove(s.sessionId);
+          } catch {
+            /* PTY already gone */
+          }
         }
       }
+      const nextActive = getActiveWorkspace(next);
+      if (nextActive) void ensureSpawned(nextActive);
+    };
+    // Confirm only if THIS workspace has live work (it may not be the active one).
+    const n = runningCount(ws);
+    if (n > 0) {
+      setPendingConfirm({
+        message: `${n} session${n > 1 ? 's are' : ' is'} still active in "${ws?.name ?? 'this workspace'}" and will be stopped. Close it?`,
+        confirmLabel: 'Close workspace',
+        onConfirm: doClose,
+      });
+    } else {
+      doClose();
     }
-    const nextActive = getActiveWorkspace(next);
-    if (nextActive) ensureSpawned(nextActive);
   };
 
   const renameWorkspace = (id: string, name: string) => {
@@ -280,16 +435,17 @@ export function App({
 
   // ---- layout / session handlers (operate on the active workspace) ----
 
-  const selectTemplate = (n: LayoutTemplate) => {
+  // Lay out N empty terminals (manual mode). Tears down whatever was here —
+  // including a swarm — and returns the workspace to manual mode.
+  const setLayoutPanes = (n: number) => {
     if (!state || !active) return;
     for (const s of active.sessions) manager.remove(s.sessionId);
     handles.current.clear();
     cleanupWorktrees();
-    pendingFanOut.current = null;
-    setQueuedVerifierId(null);
     setState(
       updateWorkspace(state, active.id, {
-        layout: buildTemplate(n),
+        mode: 'manual',
+        layout: buildGrid(n),
         sessions: [],
       }),
     );
@@ -306,13 +462,23 @@ export function App({
     if (!state || !active) return;
     const isClaude = command === 'claude';
     const label = isClaude ? 'claude' : 'shell';
+    // Pin the Claude conversation id at launch (--session-id) and persist it on
+    // the config right away, so export/import later resumes EXACTLY this
+    // conversation — never the "newest transcript in the cwd" guess, which picks
+    // the wrong session when another pane shares the directory (Epic 11).
+    // Web (no archive) launches unpinned, as before.
+    const claudeSessionId =
+      isClaude && sessionArchive ? crypto.randomUUID() : undefined;
     // The launcher's "claude" becomes a blank interactive session (no prompt
     // arg); a shell command passes through unchanged.
-    const spawnCommand = isClaude ? buildClaudeLaunch() : command;
+    const spawnCommand = isClaude
+      ? buildClaudeLaunch(claudeSessionId ? { sessionId: claudeSessionId } : {})
+      : command;
     const cfg: SessionConfig = {
       sessionId,
       title: title?.trim() || `${label} · ${basename(cwd)}`,
       cwd,
+      ...(claudeSessionId ? { claudeSessionId } : {}),
     };
     void manager.spawn(cfg, { cols: 80, rows: 24 }, { command: spawnCommand });
     setState(upsertSession(state, active.id, cfg));
@@ -360,9 +526,9 @@ export function App({
   };
 
   // Reset the active workspace to a clean single pane (recovery from a broken
-  // layout/view). Tears down this workspace's sessions, like selecting the
-  // 1-pane template.
-  const resetView = () => selectTemplate(1);
+  // layout/view, or the explicit way out of swarm mode). Tears down this
+  // workspace's sessions and returns to manual mode.
+  const resetView = () => setLayoutPanes(1);
 
   const renameSession = (sessionId: string, title: string) => {
     if (!state) return;
@@ -378,7 +544,7 @@ export function App({
       const found = findSession(state, sessionId);
       if (found && found.ws.id !== state.activeWorkspaceId) {
         setState(setActiveWorkspace(state, found.ws.id));
-        ensureSpawned(found.ws);
+        void ensureSpawned(found.ws);
       }
     }
     setFocusedId(sessionId);
@@ -483,6 +649,16 @@ export function App({
         }
         handles.current.clear();
       }
+      // Conversations still LIVE in the current list after the teardown (merge
+      // mode keeps them running). An imported pane pointing at one of these must
+      // resume with --fork-session: resuming the same conversation in a second
+      // pane would replace the live session's state with the transcript replay.
+      const liveClaudeIds = new Set(
+        base.workspaces
+          .flatMap((w) => w.sessions)
+          .filter((s) => s.claudeSessionId && manager.has(s.sessionId))
+          .map((s) => s.claudeSessionId as string),
+      );
       const { state: next, result } = reconcileImport(base, bundle, mode);
 
       // Layer-2: write transcripts under this machine's slug BEFORE respawning,
@@ -512,9 +688,30 @@ export function App({
         }
       }
 
-      setState(next);
+      // A forked pane continues the conversation under a NEW id, so its saved
+      // claudeSessionId is stale the moment it spawns. Drop it from the
+      // persisted state (the health poll re-captures and persists the fork's id
+      // on its next tick); the spawn below still resumes from the original.
+      const persisted: WorkspaceState = {
+        ...next,
+        workspaces: next.workspaces.map((w) => ({
+          ...w,
+          sessions: w.sessions.map((s) => {
+            if (
+              !s.claudeSessionId ||
+              !liveClaudeIds.has(s.claudeSessionId) ||
+              manager.has(s.sessionId)
+            ) {
+              return s;
+            }
+            const { claudeSessionId: _stale, ...rest } = s;
+            return rest;
+          }),
+        })),
+      };
+      setState(persisted);
       const active = getActiveWorkspace(next);
-      if (active) ensureSpawned(active);
+      if (active) void ensureSpawned(active, { liveClaudeIds });
       setFocusedId(null);
       setMaximizedId(null);
       return finalResult;
@@ -572,17 +769,6 @@ export function App({
   // ---- swarm (PRD Epic 10) ----
 
   const [swarmOpen, setSwarmOpen] = useState(false);
-  // The deferred verifier's pane id, while it is held. Drives a "queued"
-  // placeholder so the pane never looks like a dead agent that lost its prompt.
-  const [queuedVerifierId, setQueuedVerifierId] = useState<string | null>(null);
-  // In-flight fan-out with a deferred verifier: the verifier pane is held until
-  // every worker has finished its first turn, then spawned by the effect below.
-  // The workers' prompts are CLI args (auto-submit), so there is no seed-typing.
-  const pendingFanOut = useRef<{
-    workerIds: string[];
-    verifier: { config: SessionConfig; command: string };
-  } | null>(null);
-  const workerHasRun = useRef<Set<string>>(new Set());
   const swarmWriter = useMemo(
     () => ({ write: (id: string, d: string) => manager.write(id, d) }),
     [manager],
@@ -641,16 +827,19 @@ export function App({
     [state, active],
   );
 
-  const fanOut = useCallback(
+  const runFanOut = useCallback(
     async (
       name: string,
       task: string,
-      workers: { role: string; task: string; dir?: string }[],
-      verifier: { task: string } | null,
+      requestedWorkers: { role: string; task: string; dir?: string }[],
       autoStart: boolean,
       dir: string,
     ) => {
       if (!state || !active) return;
+      // Never fan out more agents than the layout can show: one pane per agent,
+      // grid caps at MAX_SWARM_AGENTS. The UI already disables adding past it; this
+      // is the backstop so no caller can build an unrenderable swarm.
+      const workers = clampSwarmWorkers(requestedWorkers);
       // The default directory; each worker may override it with its own (its own
       // repo), so one swarm can span several repos.
       const defaultDir = dir.trim() || active.defaultCwd;
@@ -668,33 +857,17 @@ export function App({
       }
       handles.current.clear();
       cleanupWorktrees();
-      // Drop any verifier still queued from a previous fan-out.
-      pendingFanOut.current = null;
-      setQueuedVerifierId(null);
 
       const host = swarmWorkspace;
 
-      const workerMembers = workers.map((w) => ({
+      const members: SwarmMember[] = workers.map((w) => ({
         sessionId: createSessionId(),
         role: w.role.trim() || undefined,
         task: oneLine(w.task) || undefined,
-        gated: false,
       }));
       // The directory each worker runs in (its own repo, or the default),
-      // parallel to workerMembers. Kept off the persisted member.
+      // parallel to members.
       const workerDirs = workers.map((w) => w.dir?.trim() || defaultDir);
-      const verifierMember = verifier
-        ? {
-            sessionId: createSessionId(),
-            role: 'verifier',
-            // The (possibly edited) verifier prompt is stored as a full override.
-            seedPrompt: oneLine(verifier.task) || undefined,
-            gated: true,
-          }
-        : null;
-      const members = verifierMember
-        ? [...workerMembers, verifierMember]
-        : workerMembers;
       const ids = members.map((m) => m.sessionId);
       const swarmId = createSwarmId();
       const def: SwarmDef = {
@@ -705,22 +878,20 @@ export function App({
         members,
       };
 
-      // Create an isolated worktree + branch per worker (best-effort). The branch
-      // names are appended to the verifier's prompt so it knows where to review.
-      // The run id (from the unique swarmId) keeps re-runs of a same-named swarm
-      // from colliding with the previous run's branches.
+      // Create an isolated worktree + branch per worker (best-effort). The run id
+      // (from the unique swarmId) keeps re-runs of a same-named swarm from
+      // colliding with the previous run's branches.
       const plan = planAgentWorktrees(
         name,
-        workerMembers.map((m) => m.role ?? ''),
+        members.map((m) => m.role ?? ''),
         swarmId.slice(-6),
       );
       // Per worker: if its directory is a git repo, isolate it in a worktree +
       // branch inside that repo; otherwise it runs directly in the directory
       // (shared if several agents point at the same non-repo dir). Checking the
       // repo per worker is what lets a swarm span several repos.
-      const branches: string[] = [];
       const workerCwds: string[] = [];
-      for (let i = 0; i < workerMembers.length; i++) {
+      for (let i = 0; i < members.length; i++) {
         const wdir = workerDirs[i];
         let wcwd = wdir;
         if (host?.available && (await host.isGitRepo(wdir))) {
@@ -731,21 +902,27 @@ export function App({
           );
           if (wt) {
             wcwd = wt;
-            branches.push(plan[i].branch);
             activeWorktrees.current.push({ repoDir: wdir, worktreeDir: wt });
+            // Record the worktree identity on the member so the review/merge
+            // view can act on this branch (persisted; survives reload).
+            members[i].repoDir = wdir;
+            members[i].branch = plan[i].branch;
+            members[i].worktreeDir = wt;
           }
         }
         workerCwds.push(wcwd);
       }
 
+      // Each agent gets a pinned Claude id too (same Epic-11 exactness as
+      // startSession), so swarm panes export/resume their own conversations.
       const configs: SessionConfig[] = members.map((m, i) => ({
         sessionId: m.sessionId,
         title: `${m.role ?? 'agent'} · ${name}`,
-        // Workers run in their own worktree/dir; the verifier reviews from the
-        // default directory (the integration point).
-        cwd: m.gated ? defaultDir : workerCwds[i],
+        cwd: workerCwds[i],
+        ...(sessionArchive ? { claudeSessionId: crypto.randomUUID() } : {}),
       }));
       let next = updateWorkspace(state, active.id, {
+        mode: 'swarm',
         layout: buildRow(ids),
         sessions: configs,
       });
@@ -760,9 +937,11 @@ export function App({
       const permissionMode = autoStart ? 'permissionless' : 'default';
 
       // Spawn each worker with its task as the positional prompt — it auto-submits
-      // as the first user turn and stays interactive. No typing into the TUI.
-      for (let i = 0; i < workerMembers.length; i++) {
-        const m = workerMembers[i];
+      // as the first user turn and stays interactive. No typing into the TUI. Each
+      // agent is told to self-verify (see buildAgentSystemPrompt), so there is no
+      // separate verifier agent.
+      for (let i = 0; i < members.length; i++) {
+        const m = members[i];
         // `isolated` is true only when a worktree was actually created (the cwd
         // moved off the worker's dir) — tell the agent the truth and pin its dir.
         const isolated = workerCwds[i] !== workerDirs[i];
@@ -776,78 +955,119 @@ export function App({
             isolated,
           ),
           permissionMode,
+          ...(configs[i].claudeSessionId
+            ? { sessionId: configs[i].claudeSessionId }
+            : {}),
         });
         await manager.spawn(configs[i], { cols: 80, rows: 24 }, { command });
       }
-
-      if (verifierMember) {
-        const verifierCfg = configs[configs.length - 1];
-        const verifierCommand = buildClaudeLaunch({
-          prompt: buildVerifierTask(
-            oneLine(verifier!.task) || undefined,
-            branches,
-          ),
-          permissionMode,
-        });
-        if (autoStart) {
-          // Defer: the verifier pane shows a "queued" placeholder until every
-          // worker has finished its first turn, then the effect below spawns it.
-          workerHasRun.current = new Set();
-          pendingFanOut.current = {
-            workerIds: workerMembers.map((m) => m.sessionId),
-            verifier: { config: verifierCfg, command: verifierCommand },
-          };
-          setQueuedVerifierId(verifierCfg.sessionId);
-        } else {
-          // Without auto-start nothing settles the workers to release the gate,
-          // so run the verifier alongside them (its prompt still auto-submits).
-          pendingFanOut.current = null;
-          setQueuedVerifierId(null);
-          await manager.spawn(verifierCfg, { cols: 80, rows: 24 }, {
-            command: verifierCommand,
-          });
-        }
-      } else {
-        pendingFanOut.current = null;
-        setQueuedVerifierId(null);
-      }
     },
-    [state, active, manager, swarmWorkspace, cleanupWorktrees],
+    [state, active, manager, swarmWorkspace, cleanupWorktrees, sessionArchive],
   );
 
-  // Defer-spawn the verifier off worker turn-completion: once every worker has
-  // finished its first turn (a Stop hook → `turnsCompleted >= 1`) or exited,
-  // spawn the verifier pane with its task. CLI-arg agents never enter `running`,
-  // so the gate reads completed turns, not status. Progress is tracked in refs
-  // and the spawn is idempotent (`manager.has` guard), so this never loops on its
-  // own state (see the Allotment depth bug in memory).
-  useEffect(() => {
-    const pf = pendingFanOut.current;
-    if (!pf) return;
-    if (manager.has(pf.verifier.config.sessionId)) return; // already spawned
+  // Fan out, confirming first if the current workspace has live work (the swarm
+  // replaces the whole layout).
+  const fanOut = useCallback(
+    (
+      name: string,
+      task: string,
+      workers: { role: string; task: string; dir?: string }[],
+      autoStart: boolean,
+      dir: string,
+    ) => {
+      guardActive(
+        'Replace the current terminals with this swarm?',
+        'Fan out',
+        () => void runFanOut(name, task, workers, autoStart, dir),
+      );
+    },
+    [guardActive, runFanOut],
+  );
 
-    // A worker is "done" with its first turn once it has a completed turn (Stop
-    // hook) — or it crashed/exited (don't hang the verifier on a dead worker).
-    for (const id of pf.workerIds) {
-      const turns = turnsById.get(id) ?? 0;
-      if (turns >= 1 || statusById.get(id) === 'exited') {
-        workerHasRun.current.add(id);
+  // Explicit exit from swarm "board mode": tear the swarm down and return to a
+  // clean manual single pane (confirming if agents are still working).
+  // setLayoutPanes already clears the worktrees and mode.
+  const endSwarm = () =>
+    guardActive('End the swarm and return to manual terminals?', 'End swarm', () =>
+      setLayoutPanes(1),
+    );
+
+  // ---- swarm review / merge (the payoff of worktree isolation) ----
+
+  const [reviewOpen, setReviewOpen] = useState(false);
+
+  // Agents that produced an isolated branch+worktree (review/merge targets),
+  // gathered across the active workspace's swarms. Empty when agents shared a dir.
+  const reviewMembers: ReviewMember[] = useMemo(() => {
+    const out: ReviewMember[] = [];
+    for (const sw of active?.swarms ?? []) {
+      for (const m of sw.members) {
+        if (m.repoDir && m.branch && m.worktreeDir) {
+          out.push({
+            sessionId: m.sessionId,
+            role: m.role,
+            repoDir: m.repoDir,
+            branch: m.branch,
+            worktreeDir: m.worktreeDir,
+          });
+        }
       }
     }
+    return out;
+  }, [active]);
 
-    const workerStates = pf.workerIds.map((id) => {
-      const st = statusById.get(id) ?? 'spawning';
-      // A crashed worker counts as settled so it can't stall the verifier.
-      return { hasRun: workerHasRun.current.has(id), status: st === 'exited' ? 'idle' : st };
-    });
-    if (workersReleaseVerifier(workerStates)) {
-      const { config, command } = pf.verifier;
-      pendingFanOut.current = null;
-      setQueuedVerifierId(null);
-      void manager.spawn(config, { cols: 80, rows: 24 }, { command });
-      setFocusedId(config.sessionId);
-    }
-  }, [statusById, turnsById, manager]);
+  const reviewMember = useCallback(
+    (m: ReviewMember) =>
+      swarmWorkspace?.reviewWorktree(m.repoDir, m.branch, m.worktreeDir) ??
+      Promise.reject(new Error('Review unavailable on this host.')),
+    [swarmWorkspace],
+  );
+
+  const mergeMember = useCallback(
+    (m: ReviewMember, squash: boolean) =>
+      swarmWorkspace?.mergeWorktree(m.repoDir, m.branch, m.worktreeDir, { squash }) ??
+      Promise.resolve({ ok: false, conflict: false, message: 'Merge unavailable on this host.' }),
+    [swarmWorkspace],
+  );
+
+  // Discard = remove the worktree + delete the branch, then drop the worktree
+  // identity off the member so its review row disappears. Confirmed first.
+  const discardMember = useCallback(
+    (m: ReviewMember) =>
+      new Promise<void>((resolve) => {
+        guardActive(
+          `Discard the "${m.role ?? 'agent'}" agent's branch and its work?`,
+          'Discard',
+          () => {
+            void (async () => {
+              await swarmWorkspace?.discardWorktree(m.repoDir, m.worktreeDir, m.branch);
+              activeWorktrees.current = activeWorktrees.current.filter(
+                (wt) => wt.worktreeDir !== m.worktreeDir,
+              );
+              setState((prev) => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  workspaces: prev.workspaces.map((ws) => ({
+                    ...ws,
+                    swarms: ws.swarms?.map((sw) => ({
+                      ...sw,
+                      members: sw.members.map((mem) =>
+                        mem.sessionId === m.sessionId
+                          ? { ...mem, repoDir: undefined, branch: undefined, worktreeDir: undefined }
+                          : mem,
+                      ),
+                    })),
+                  })),
+                };
+              });
+              resolve();
+            })();
+          },
+        );
+      }),
+    [guardActive, swarmWorkspace],
+  );
 
   // ---- rendering ----
 
@@ -884,6 +1104,12 @@ export function App({
           }}
         >
           {status && <StatusBadge status={status} pulse={status === 'waiting'} />}
+          {healthById.get(sessionId) && (
+            <ContextHealthBadge
+              health={healthById.get(sessionId)!}
+              onHandoff={() => handoff(sessionId)}
+            />
+          )}
           <span
             style={{
               flex: 1,
@@ -946,29 +1172,6 @@ export function App({
                 else handles.current.delete(id);
               }}
             />
-          ) : sessionId === queuedVerifierId ? (
-            <div
-              style={{
-                height: '100%',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 8,
-                textAlign: 'center',
-                padding: 16,
-                color: 'var(--fg-muted)',
-              }}
-            >
-              <div style={{ fontSize: 22 }}>⏳</div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)' }}>
-                Verifier queued
-              </div>
-              <div style={{ fontSize: 11.5, maxWidth: 280, lineHeight: 1.5 }}>
-                Waiting for the worker agents to finish their first turn. The
-                verifier starts automatically — its prompt will run then.
-              </div>
-            </div>
           ) : (
             <PaneLauncher
               defaultCwd={active?.defaultCwd ?? defaultCwd}
@@ -1059,47 +1262,117 @@ export function App({
           >
             {active.name}
           </span>
-          <span style={{ color: 'var(--fg-muted)', fontSize: 12 }}>Layout</span>
-          <div style={{ display: 'flex', gap: 4 }}>
-            {TEMPLATES.map((n) => {
-              const selected = paneCount === n;
-              return (
+          {swarmMode ? (
+            <>
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: 'var(--accent)',
+                  border: '1px solid var(--accent)',
+                  borderRadius: 6,
+                  padding: '3px 10px',
+                }}
+                title="This workspace is running a swarm. Manual terminal controls are locked."
+              >
+                ⚇ Swarm active
+              </span>
+              {swarmWorkspace?.available && reviewMembers.length > 0 && (
                 <button
-                  key={n}
-                  onClick={() => selectTemplate(n)}
-                  title={`${n}-pane layout`}
+                  onClick={() => setReviewOpen(true)}
+                  title="Review each agent's branch and merge or discard it"
                   style={{
-                    background: selected ? 'var(--accent)' : 'var(--bg)',
-                    color: selected ? '#0e1116' : 'var(--fg)',
-                    border: '1px solid',
-                    borderColor: selected ? 'var(--accent)' : 'var(--border)',
+                    background: 'var(--bg)',
+                    color: 'var(--fg)',
+                    border: '1px solid var(--border)',
                     borderRadius: 6,
                     padding: '4px 12px',
                     cursor: 'pointer',
                     fontFamily: 'inherit',
-                    fontWeight: selected ? 600 : 400,
                   }}
                 >
-                  {TEMPLATE_LABELS[n]}
+                  ⎇ Review ({reviewMembers.length})
                 </button>
-              );
-            })}
-          </div>
-          <button
-            onClick={resetView}
-            title="Reset to a single clean pane (recover a broken view)"
-            style={{
-              background: 'var(--bg)',
-              color: 'var(--fg)',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              padding: '4px 12px',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            ↺ Reset
-          </button>
+              )}
+              <button
+                onClick={endSwarm}
+                title="Tear down the swarm and return to manual terminals"
+                style={{
+                  background: 'var(--bg)',
+                  color: 'var(--fg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  padding: '4px 12px',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                End swarm
+              </button>
+            </>
+          ) : (
+            <>
+              <label
+                htmlFor="terminal-count"
+                style={{ color: 'var(--fg-muted)', fontSize: 12 }}
+              >
+                Terminals
+              </label>
+              <select
+                id="terminal-count"
+                value={paneCount}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  if (n === paneCount) return;
+                  guardActive(
+                    `Lay out ${n} terminal${n > 1 ? 's' : ''}?`,
+                    'Change layout',
+                    () => setLayoutPanes(n),
+                  );
+                }}
+                title="How many terminals to lay out"
+                style={{
+                  background: 'var(--bg)',
+                  color: 'var(--fg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  padding: '4px 8px',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                {TERMINAL_COUNTS.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() =>
+                  guardActive(
+                    'Reset to a single clean pane?',
+                    'Reset',
+                    () => resetView(),
+                  )
+                }
+                title="Reset to a single clean pane (recover a broken view)"
+                style={{
+                  background: 'var(--bg)',
+                  color: 'var(--fg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  padding: '4px 12px',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                ↺ Reset
+              </button>
+            </>
+          )}
           <div
             style={{
               marginLeft: 'auto',
@@ -1203,6 +1476,18 @@ export function App({
         />
       )}
 
+      {reviewOpen && (
+        <DiffReview
+          members={reviewMembers}
+          statusOf={statusOf}
+          review={reviewMember}
+          merge={mergeMember}
+          discard={discardMember}
+          onFocusSession={focusSession}
+          onClose={() => setReviewOpen(false)}
+        />
+      )}
+
       {voiceEnabled && (
         <RecordingIndicator
           status={voice.status}
@@ -1231,6 +1516,80 @@ export function App({
           }}
         >
           {voice.error} · click to dismiss
+        </div>
+      )}
+
+      {pendingConfirm && (
+        <div
+          onClick={() => setPendingConfirm(null)}
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 70,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border)',
+              borderRadius: 10,
+              padding: 20,
+              width: 420,
+              maxWidth: '92%',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 16,
+              color: 'var(--fg)',
+            }}
+          >
+            <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+              {pendingConfirm.message}
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setPendingConfirm(null)}
+                style={{
+                  background: 'var(--bg)',
+                  color: 'var(--fg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  padding: '7px 14px',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                  fontSize: 12,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const action = pendingConfirm.onConfirm;
+                  setPendingConfirm(null);
+                  action();
+                }}
+                style={{
+                  background: 'var(--status-waiting)',
+                  color: '#1a1a1a',
+                  border: 'none',
+                  borderRadius: 6,
+                  padding: '7px 14px',
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                  fontFamily: 'inherit',
+                  fontSize: 12,
+                }}
+              >
+                {pendingConfirm.confirmLabel}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

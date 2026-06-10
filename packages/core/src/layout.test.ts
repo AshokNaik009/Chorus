@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildGrid,
   buildTemplate,
   collectSessionIds,
   countPanes,
@@ -7,6 +8,28 @@ import {
   setSizesAtPath,
 } from './layout';
 import type { LayoutNode } from './models';
+
+describe('buildGrid', () => {
+  it('lays out 1–6 panes with the right pane count and ids', () => {
+    for (let n = 1; n <= 6; n++) {
+      const ids = Array.from({ length: n }, (_, i) => `s${i}`);
+      expect(countPanes(buildGrid(n, ids))).toBe(n);
+      expect(collectSessionIds(buildGrid(n, ids))).toEqual(ids);
+    }
+  });
+  it('1 pane is a single leaf; ≤3 stays one row', () => {
+    expect(buildGrid(1, ['a'])).toEqual({ type: 'pane', sessionId: 'a' });
+    expect(buildGrid(3, ['a', 'b', 'c']).type).toBe('split');
+  });
+  it('5 panes wrap into stacked rows (3 over 2)', () => {
+    const node = buildGrid(5, ['a', 'b', 'c', 'd', 'e']);
+    expect(node.type).toBe('split');
+    if (node.type === 'split') {
+      expect(node.direction).toBe('column');
+      expect(node.children).toHaveLength(2);
+    }
+  });
+});
 
 describe('buildTemplate', () => {
   it('1-pane is a single leaf', () => {

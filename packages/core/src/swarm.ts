@@ -7,10 +7,60 @@
  * The broadcast targeting, role-seed templating, and blackboard document are pure
  * and unit-tested here; only creating the shared directory needs the host.
  */
-import type { SessionStatus, SwarmDef, SwarmMember } from './models.js';
+import type { SwarmDef, SwarmMember } from './models.js';
 
 /** Ctrl-C — sent to every member by "Stop all" (US-10.5). */
 export const SWARM_INTERRUPT = '\x03';
+
+/**
+ * Hard cap on agents in one fan-out. A swarm lays out one pane per agent and the
+ * grid tops out at 6 (TERMINAL_COUNTS / buildGrid), so more agents than this have
+ * nowhere to render. Single source of truth — the UI cap and the fan-out guard
+ * both read it, so the limit can't drift between them.
+ */
+export const MAX_SWARM_AGENTS = 6;
+
+/**
+ * Clamp a worker list to the agent cap, keeping the first `MAX_SWARM_AGENTS`.
+ * Defensive backstop for the fan-out path: the UI already disables adding past
+ * the cap, but no caller should ever build a swarm the layout can't show.
+ */
+export function clampSwarmWorkers<T>(workers: T[]): T[] {
+  return workers.length > MAX_SWARM_AGENTS
+    ? workers.slice(0, MAX_SWARM_AGENTS)
+    : workers;
+}
+
+/** A file's line delta in an agent's branch vs the repo's current branch. */
+export interface WorktreeReviewFile {
+  path: string;
+  added: number;
+  deleted: number;
+}
+
+/** Summary of one agent worktree's work, for the review/merge view. */
+export interface WorktreeReview {
+  branch: string;
+  /** The repo's current branch — the merge target (resolved at review time). */
+  baseBranch: string;
+  /** True if the branch has commits ahead of base OR uncommitted worktree edits. */
+  hasChanges: boolean;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  files: WorktreeReviewFile[];
+  commits: { hash: string; subject: string }[];
+  /** The worktree has uncommitted changes (merge will auto-commit them first). */
+  dirty: boolean;
+}
+
+/** Outcome of merging an agent branch into the repo's current branch. */
+export interface MergeResult {
+  ok: boolean;
+  /** True when the merge hit a conflict and was aborted (base left intact). */
+  conflict: boolean;
+  message: string;
+}
 
 let swarmCounter = 0;
 /** Process-unique swarm id, no platform globals. */
@@ -50,6 +100,32 @@ export interface SwarmWorkspace {
   ): Promise<string | null>;
   /** Remove a worktree previously created (best-effort). `worktreeDir` is absolute. */
   removeWorktree(repoDir: string, worktreeDir: string): Promise<void>;
+  /**
+   * Summarize an agent branch's work (files ±, commits, dirty) vs the repo's
+   * current branch. Best-effort; never throws.
+   */
+  reviewWorktree(
+    repoDir: string,
+    branch: string,
+    worktreeDir: string,
+  ): Promise<WorktreeReview>;
+  /**
+   * Land an agent branch into the repo's current branch. Auto-commits any
+   * uncommitted worktree edits first. `squash` collapses to one commit. On
+   * conflict the merge is aborted and `{ok:false, conflict:true}` returned.
+   */
+  mergeWorktree(
+    repoDir: string,
+    branch: string,
+    worktreeDir: string,
+    opts: { squash: boolean },
+  ): Promise<MergeResult>;
+  /** Remove an agent's worktree AND delete its branch (best-effort). */
+  discardWorktree(
+    repoDir: string,
+    worktreeDir: string,
+    branch: string,
+  ): Promise<void>;
   /**
    * Create the blackboard directory and write `CHORUS_SWARM.md` into it under
    * `baseCwd`. Returns the absolute directory path, or null if unavailable.
@@ -163,40 +239,12 @@ export function buildAgentSystemPrompt(
       ? 'You have your own isolated git branch and worktree here; commit your changes when you finish.'
       : 'You share this directory with the other agents, so stay within your assigned task and files to avoid overwriting their work.',
   );
-  return parts.join(' ');
-}
-
-/**
- * The verifier's positional prompt, built once the workers finish. The user's
- * (possibly edited) instructions form the body; the worker branches are appended
- * so the verifier knows where to look for their committed work.
- */
-export function buildVerifierTask(
-  userTask: string | undefined,
-  branches: string[],
-): string {
-  const base =
-    userTask?.trim() ||
-    'You are the verifier. The other agents have finished their work. Review it for correctness, run or inspect the tests, and report any issues you find.';
-  if (branches.length === 0) return base;
-  return `${base} The worker agents committed their work on these git branches: ${branches.join(
-    ', ',
-  )}. Review the changes on those branches.`;
-}
-
-/**
- * The gate for the verifier: release it only once every worker has actually run
- * (entered `running`) and then settled back to `idle`. `hasRun` is essential —
- * without it the initial post-spawn idle would release the verifier before any
- * work happened.
- */
-export function workersReleaseVerifier(
-  workers: { hasRun: boolean; status: SessionStatus }[],
-): boolean {
-  return (
-    workers.length > 0 &&
-    workers.every((w) => w.hasRun && w.status === 'idle')
+  // Self-verification replaces the old separate verifier agent: each agent owns
+  // the correctness of its own slice.
+  parts.push(
+    'If your task involves writing or changing code, also write and run appropriate tests (or otherwise verify your work) and make sure it meets the acceptance criteria before you finish. Do not report done until you have verified it.',
   );
+  return parts.join(' ');
 }
 
 /**

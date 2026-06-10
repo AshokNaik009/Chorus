@@ -17,3 +17,4 @@ export * from './session-manager.js';
 export * from './bundle.js';
 export * from './voice.js';
 export * from './swarm.js';
+export * from './context-health.js';

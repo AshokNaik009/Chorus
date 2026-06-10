@@ -87,6 +87,34 @@ export function buildRow(ids: string[]): LayoutNode {
   return ids.length === 1 ? pane(ids[0]) : rowOf(ids);
 }
 
+/**
+ * Build a balanced grid for an arbitrary pane count (the simplified "how many
+ * terminals?" picker). Up to 3 panes go in one row; 4+ wrap into stacked rows of
+ * roughly equal width (e.g. 5 → a row of 3 over a row of 2, 6 → 2×3). Generates
+ * fresh ids when none are given. Pure.
+ */
+export function buildGrid(
+  count: number,
+  ids: string[] = Array.from({ length: count }, () => createSessionId()),
+): LayoutNode {
+  if (ids.length === 0) throw new Error('buildGrid needs at least one id');
+  if (ids.length === 1) return pane(ids[0]);
+  if (ids.length <= 3) return rowOf(ids);
+  const cols = Math.ceil(Math.sqrt(ids.length));
+  const rows = Math.ceil(ids.length / cols);
+  const children: LayoutNode[] = [];
+  for (let r = 0; r < rows; r++) {
+    const slice = ids.slice(r * cols, r * cols + cols);
+    if (slice.length > 0) children.push(buildRow(slice));
+  }
+  return {
+    type: 'split',
+    direction: 'column',
+    sizes: equalSizes(children.length),
+    children,
+  };
+}
+
 /** Structural validation of an untrusted layout tree (for loading state). */
 export function isLayoutNode(value: unknown): value is LayoutNode {
   if (!value || typeof value !== 'object') return false;

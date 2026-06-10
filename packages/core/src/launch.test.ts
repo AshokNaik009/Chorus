@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { shellLaunchArgs, withClaudeHooks } from './launch';
+import { buildClaudeLaunch, shellLaunchArgs, withClaudeHooks } from './launch';
 
 describe('shellLaunchArgs', () => {
   it('plain interactive shell -> no args (unix)', () => {
@@ -25,6 +25,30 @@ describe('shellLaunchArgs', () => {
 
   it('windows plain shell -> no args', () => {
     expect(shellLaunchArgs(undefined, true)).toEqual([]);
+  });
+});
+
+describe('buildClaudeLaunch session identity', () => {
+  it('pins a NEW conversation with --session-id', () => {
+    expect(buildClaudeLaunch({ sessionId: 'uuid-1' })).toBe(
+      "claude --session-id 'uuid-1'",
+    );
+  });
+
+  it('--resume keeps the saved id and wins over sessionId', () => {
+    expect(
+      buildClaudeLaunch({ resumeSessionId: 'old', sessionId: 'ignored' }),
+    ).toBe("claude --resume 'old'");
+  });
+
+  it('forkSession adds --fork-session to a resume (live-collision import)', () => {
+    expect(buildClaudeLaunch({ resumeSessionId: 'old', forkSession: true })).toBe(
+      "claude --resume 'old' --fork-session",
+    );
+  });
+
+  it('forkSession without resume is a no-op', () => {
+    expect(buildClaudeLaunch({ forkSession: true })).toBe('claude');
   });
 });
 

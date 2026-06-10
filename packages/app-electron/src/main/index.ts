@@ -11,7 +11,10 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import { fileURLToPath } from 'node:url';
 import {
   claudeProjectSlug,
+  contextHealthFromTranscript,
   parseWorkspaceState,
+  resolveThresholds,
+  type ContextHealth,
   type ConversationRef,
   type ImportConversationsResult,
   type SpawnOptions,
@@ -21,8 +24,11 @@ import { IPC } from '../shared/ipc.js';
 import { PtyHost } from './pty-host.js';
 import {
   createWorktree,
+  discardWorktree,
   isGitRepo,
+  mergeWorktree,
   removeWorktree,
+  reviewWorktree,
 } from './git-worktree.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -133,6 +139,22 @@ ipcMain.handle(
   (_e, repoDir: string, worktreeDir: string): Promise<void> =>
     removeWorktree(resolveBase(repoDir), worktreeDir),
 );
+// Review/merge the agent branches a fan-out produced (worktreeDir is absolute).
+ipcMain.handle(
+  IPC.reviewWorktree,
+  (_e, repoDir: string, branch: string, worktreeDir: string) =>
+    reviewWorktree(resolveBase(repoDir), branch, worktreeDir),
+);
+ipcMain.handle(
+  IPC.mergeWorktree,
+  (_e, repoDir: string, branch: string, worktreeDir: string, opts: { squash: boolean }) =>
+    mergeWorktree(resolveBase(repoDir), branch, worktreeDir, opts),
+);
+ipcMain.handle(
+  IPC.discardWorktree,
+  (_e, repoDir: string, worktreeDir: string, branch: string): Promise<void> =>
+    discardWorktree(resolveBase(repoDir), worktreeDir, branch),
+);
 
 // ---- Layer-2 memory portability (PRD Epic 11 / M12). All touch ~/.claude. ----
 
@@ -160,6 +182,25 @@ ipcMain.handle(
       return stats[0].id;
     } catch {
       return null;
+    }
+  },
+);
+
+// Exact existence check for a pinned conversation id: `--resume` only works when
+// the transcript file is actually on disk; otherwise the pane starts fresh with
+// `--session-id`. Never throws (missing dir/file → false).
+ipcMain.handle(
+  IPC.hasConversation,
+  async (_e, claudeSessionId: string, cwd: string): Promise<boolean> => {
+    try {
+      const file = path.join(
+        projectsDir(resolveBase(cwd)),
+        `${claudeSessionId}.jsonl`,
+      );
+      await fs.access(file);
+      return true;
+    } catch {
+      return false;
     }
   },
 );
@@ -215,6 +256,26 @@ ipcMain.handle(
       }
     }
     return { imported, skipped, warnings };
+  },
+);
+
+// Live context-window occupancy for a pane: read its transcript, compute the
+// reading via core against env-tuned thresholds. Best-effort; null on any miss
+// (no transcript yet, no `~/.claude`) so the UI poll can't throw.
+ipcMain.handle(
+  IPC.readContextHealth,
+  async (
+    _e,
+    claudeSessionId: string,
+    cwd: string,
+  ): Promise<ContextHealth | null> => {
+    try {
+      const file = path.join(projectsDir(resolveBase(cwd)), `${claudeSessionId}.jsonl`);
+      const transcript = await fs.readFile(file, 'utf8');
+      return contextHealthFromTranscript(transcript, resolveThresholds(process.env));
+    } catch {
+      return null;
+    }
   },
 );
 

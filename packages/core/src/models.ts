@@ -38,20 +38,24 @@ export type LayoutNode =
     }
   | { type: 'pane'; sessionId: string };
 
-/** One agent in a swarm: a session plus its role + seed prompt (PRD Epic 10). */
+/** One agent in a swarm: a session plus its role + task (PRD Epic 10). */
 export interface SwarmMember {
   sessionId: string;
   /** 'frontend' | 'backend' | 'tests' | free text. */
   role?: string;
-  /** This agent's individual task, woven into its seed prompt. */
+  /** This agent's individual task. */
   task?: string;
-  /** Full seed override; when set, replaces the templated prompt entirely. */
-  seedPrompt?: string;
   /**
-   * Gated members (the verifier) do not auto-start with the others — they are
-   * released only after every non-gated member has finished (PRD Epic 10).
+   * Git-worktree identity, set only when this agent got an isolated worktree +
+   * branch (the agent's directory was a git repo). Absent for shared-dir agents
+   * and on hosts without worktrees (web). Persisted so the review/merge view can
+   * act on the branch after a reload.
    */
-  gated?: boolean;
+  repoDir?: string;
+  /** The agent's branch, e.g. `chorus/<swarm>/<role>` (from planAgentWorktrees). */
+  branch?: string;
+  /** Absolute path of the agent's worktree. */
+  worktreeDir?: string;
 }
 
 /**
@@ -79,6 +83,13 @@ export interface Workspace {
   name: string;
   /** New panes prefill this cwd; each pane may override it. */
   defaultCwd: string;
+  /**
+   * How the workspace was populated: 'manual' (user-chosen terminal grid) or
+   * 'swarm' (one pane per fan-out agent). While 'swarm', the manual layout
+   * controls are locked — leaving the swarm is an explicit action. Absent on
+   * older saves; treated as 'manual'.
+   */
+  mode?: 'manual' | 'swarm';
   layout: LayoutNode;
   /** Configs for panes that have been started (a pane may exist unstarted). */
   sessions: SessionConfig[];

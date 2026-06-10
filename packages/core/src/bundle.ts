@@ -12,6 +12,7 @@
  * Everything in this module is framework- and host-agnostic, so the bundle shape,
  * validation, and merge/replace reconciliation are unit-testable in isolation.
  */
+import type { ContextHealth } from './context-health.js';
 import type { LayoutNode, SessionConfig, Workspace, WorkspaceState } from './models.js';
 import { collectSessionIds, createSessionId } from './layout.js';
 import { createWorkspaceId, parseWorkspaceState } from './workspace.js';
@@ -77,6 +78,13 @@ export interface SessionArchive {
    * when it cannot be determined; never throws so it can't block a launch.
    */
   captureSessionId(paneSessionId: string, cwd: string): Promise<string | null>;
+  /**
+   * True when a transcript exists on this machine for the conversation id, i.e.
+   * `--resume <id>` will find it. Decides resume-vs-fresh at (re)spawn: a pane
+   * whose pinned id has no transcript yet must launch with `--session-id`, not
+   * `--resume` (which would error). Never throws.
+   */
+  hasConversation(claudeSessionId: string, cwd: string): Promise<boolean>;
   /** Read each conversation's JSONL transcript for a full export. */
   exportConversations(
     items: { sessionId: string; cwd: string }[],
@@ -92,6 +100,15 @@ export interface SessionArchive {
   ): Promise<ImportConversationsResult>;
   /** argv to resume a conversation in a pane PTY, e.g. ['--resume', id]. */
   resumeArgs(sessionId: string): string[];
+  /**
+   * Live context-window occupancy for a pane, read from its transcript JSONL.
+   * Returns null when there's no transcript/usage yet (or the host can't read
+   * `~/.claude`, e.g. web); never throws so polling can't disrupt the UI.
+   */
+  readContextHealth(
+    claudeSessionId: string,
+    cwd: string,
+  ): Promise<ContextHealth | null>;
 }
 
 // ---- Layer 2 helpers (pure) ----

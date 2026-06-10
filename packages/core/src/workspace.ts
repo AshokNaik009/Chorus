@@ -184,7 +184,10 @@ function isSwarmMember(v: unknown): v is SwarmMember {
   return (
     typeof m.sessionId === 'string' &&
     (m.role === undefined || typeof m.role === 'string') &&
-    (m.seedPrompt === undefined || typeof m.seedPrompt === 'string')
+    (m.task === undefined || typeof m.task === 'string') &&
+    (m.repoDir === undefined || typeof m.repoDir === 'string') &&
+    (m.branch === undefined || typeof m.branch === 'string') &&
+    (m.worktreeDir === undefined || typeof m.worktreeDir === 'string')
   );
 }
 

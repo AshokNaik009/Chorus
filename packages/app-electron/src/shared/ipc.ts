@@ -79,7 +79,7 @@ export interface PaneApi {
   isGitRepo(dir: string): Promise<boolean>;
   /**
    * Create an isolated worktree + branch off `repoDir`'s HEAD. `worktreeSubdir`
-   * is based under `~/.chorus/worktrees/`. Returns the absolute path, or null.
+   * is based under `<repoDir>/.chorus/`. Returns the absolute path, or null.
    */
   createWorktree(
     repoDir: string,

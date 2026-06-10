@@ -183,7 +183,11 @@ function isSwarmMember(v: unknown): v is SwarmMember {
   const m = v as Record<string, unknown>;
   return (
     typeof m.sessionId === 'string' &&
-    (m.role === undefined || typeof m.role === 'string')
+    (m.role === undefined || typeof m.role === 'string') &&
+    (m.task === undefined || typeof m.task === 'string') &&
+    (m.repoDir === undefined || typeof m.repoDir === 'string') &&
+    (m.branch === undefined || typeof m.branch === 'string') &&
+    (m.worktreeDir === undefined || typeof m.worktreeDir === 'string')
   );
 }
 

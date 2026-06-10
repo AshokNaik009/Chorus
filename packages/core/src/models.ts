@@ -45,6 +45,17 @@ export interface SwarmMember {
   role?: string;
   /** This agent's individual task. */
   task?: string;
+  /**
+   * Git-worktree identity, set only when this agent got an isolated worktree +
+   * branch (the agent's directory was a git repo). Absent for shared-dir agents
+   * and on hosts without worktrees (web). Persisted so the review/merge view can
+   * act on the branch after a reload.
+   */
+  repoDir?: string;
+  /** The agent's branch, e.g. `chorus/<swarm>/<role>` (from planAgentWorktrees). */
+  branch?: string;
+  /** Absolute path of the agent's worktree. */
+  worktreeDir?: string;
 }
 
 /**

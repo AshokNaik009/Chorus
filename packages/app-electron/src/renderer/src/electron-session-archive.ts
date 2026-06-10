@@ -1,5 +1,6 @@
 import {
   resumeArgs,
+  type ContextHealth,
   type ConversationRef,
   type ImportConversationsResult,
   type SessionArchive,
@@ -17,6 +18,10 @@ export class ElectronSessionArchive implements SessionArchive {
 
   captureSessionId(paneSessionId: string, cwd: string): Promise<string | null> {
     return this.api.captureSessionId(paneSessionId, cwd);
+  }
+
+  hasConversation(claudeSessionId: string, cwd: string): Promise<boolean> {
+    return this.api.hasConversation(claudeSessionId, cwd);
   }
 
   exportConversations(
@@ -43,5 +48,12 @@ export class ElectronSessionArchive implements SessionArchive {
 
   resumeArgs(claudeSessionId: string): string[] {
     return resumeArgs(claudeSessionId);
+  }
+
+  readContextHealth(
+    claudeSessionId: string,
+    cwd: string,
+  ): Promise<ContextHealth | null> {
+    return this.api.readContextHealth(claudeSessionId, cwd);
   }
 }

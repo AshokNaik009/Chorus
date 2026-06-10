@@ -1,4 +1,4 @@
-import type { SwarmWorkspace } from '@app/core';
+import type { MergeResult, SwarmWorkspace, WorktreeReview } from '@app/core';
 import type { PaneApi } from '../../shared/ipc.js';
 
 /**
@@ -25,6 +25,31 @@ export class ElectronSwarmWorkspace implements SwarmWorkspace {
 
   removeWorktree(repoDir: string, worktreeDir: string): Promise<void> {
     return this.api.removeWorktree(repoDir, worktreeDir);
+  }
+
+  reviewWorktree(
+    repoDir: string,
+    branch: string,
+    worktreeDir: string,
+  ): Promise<WorktreeReview> {
+    return this.api.reviewWorktree(repoDir, branch, worktreeDir);
+  }
+
+  mergeWorktree(
+    repoDir: string,
+    branch: string,
+    worktreeDir: string,
+    opts: { squash: boolean },
+  ): Promise<MergeResult> {
+    return this.api.mergeWorktree(repoDir, branch, worktreeDir, opts);
+  }
+
+  discardWorktree(
+    repoDir: string,
+    worktreeDir: string,
+    branch: string,
+  ): Promise<void> {
+    return this.api.discardWorktree(repoDir, worktreeDir, branch);
   }
 
   createBlackboard(

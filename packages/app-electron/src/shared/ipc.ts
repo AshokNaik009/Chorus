@@ -5,10 +5,13 @@
  * wire format) — the difference is only the transport.
  */
 import type {
+  ContextHealth,
   ConversationRef,
   ImportConversationsResult,
+  MergeResult,
   SpawnOptions,
   WorkspaceState,
+  WorktreeReview,
 } from '@app/core';
 
 /** Channel names. Renderer->main are invoke/send; main->renderer are sends. */
@@ -25,9 +28,14 @@ export const IPC = {
   isGitRepo: 'pane:is-git-repo',
   createWorktree: 'pane:create-worktree',
   removeWorktree: 'pane:remove-worktree',
+  reviewWorktree: 'pane:review-worktree',
+  mergeWorktree: 'pane:merge-worktree',
+  discardWorktree: 'pane:discard-worktree',
   captureSessionId: 'pane:capture-session-id',
+  hasConversation: 'pane:has-conversation',
   exportConversations: 'pane:export-conversations',
   importConversations: 'pane:import-conversations',
+  readContextHealth: 'pane:read-context-health',
 } as const;
 
 /** Payload for `pane:pty-data` / `pane:pty-exit` (keyed by session). */
@@ -80,11 +88,41 @@ export interface PaneApi {
   ): Promise<string | null>;
   /** Remove a worktree previously created (best-effort). */
   removeWorktree(repoDir: string, worktreeDir: string): Promise<void>;
+  /** Summarize an agent branch's work (files ±, commits, dirty) vs the repo's branch. */
+  reviewWorktree(
+    repoDir: string,
+    branch: string,
+    worktreeDir: string,
+  ): Promise<WorktreeReview>;
+  /** Land an agent branch into the repo's current branch (auto-commits dirty first). */
+  mergeWorktree(
+    repoDir: string,
+    branch: string,
+    worktreeDir: string,
+    opts: { squash: boolean },
+  ): Promise<MergeResult>;
+  /** Remove an agent's worktree AND delete its branch (best-effort). */
+  discardWorktree(
+    repoDir: string,
+    worktreeDir: string,
+    branch: string,
+  ): Promise<void>;
   /** Layer-2 (PRD Epic 11) — all touch `~/.claude`, so they live in main. */
   captureSessionId(paneSessionId: string, cwd: string): Promise<string | null>;
+  /** True when `<claudeSessionId>.jsonl` exists under `cwd`'s project slug. */
+  hasConversation(claudeSessionId: string, cwd: string): Promise<boolean>;
   exportConversations(
     items: { sessionId: string; cwd: string }[],
   ): Promise<ConversationRef[]>;
   /** `refs` already have their project paths remapped for this machine. */
   importConversations(refs: ConversationRef[]): Promise<ImportConversationsResult>;
+  /**
+   * Read the pane's live context-window occupancy from its transcript. `cwd`
+   * locates the project slug; `claudeSessionId` names the `.jsonl`. Thresholds
+   * come from main's env. Null when no transcript/usage exists yet; never throws.
+   */
+  readContextHealth(
+    claudeSessionId: string,
+    cwd: string,
+  ): Promise<ContextHealth | null>;
 }

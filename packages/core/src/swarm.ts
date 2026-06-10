@@ -12,6 +12,56 @@ import type { SwarmDef, SwarmMember } from './models.js';
 /** Ctrl-C — sent to every member by "Stop all" (US-10.5). */
 export const SWARM_INTERRUPT = '\x03';
 
+/**
+ * Hard cap on agents in one fan-out. A swarm lays out one pane per agent and the
+ * grid tops out at 6 (TERMINAL_COUNTS / buildGrid), so more agents than this have
+ * nowhere to render. Single source of truth — the UI cap and the fan-out guard
+ * both read it, so the limit can't drift between them.
+ */
+export const MAX_SWARM_AGENTS = 6;
+
+/**
+ * Clamp a worker list to the agent cap, keeping the first `MAX_SWARM_AGENTS`.
+ * Defensive backstop for the fan-out path: the UI already disables adding past
+ * the cap, but no caller should ever build a swarm the layout can't show.
+ */
+export function clampSwarmWorkers<T>(workers: T[]): T[] {
+  return workers.length > MAX_SWARM_AGENTS
+    ? workers.slice(0, MAX_SWARM_AGENTS)
+    : workers;
+}
+
+/** A file's line delta in an agent's branch vs the repo's current branch. */
+export interface WorktreeReviewFile {
+  path: string;
+  added: number;
+  deleted: number;
+}
+
+/** Summary of one agent worktree's work, for the review/merge view. */
+export interface WorktreeReview {
+  branch: string;
+  /** The repo's current branch — the merge target (resolved at review time). */
+  baseBranch: string;
+  /** True if the branch has commits ahead of base OR uncommitted worktree edits. */
+  hasChanges: boolean;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  files: WorktreeReviewFile[];
+  commits: { hash: string; subject: string }[];
+  /** The worktree has uncommitted changes (merge will auto-commit them first). */
+  dirty: boolean;
+}
+
+/** Outcome of merging an agent branch into the repo's current branch. */
+export interface MergeResult {
+  ok: boolean;
+  /** True when the merge hit a conflict and was aborted (base left intact). */
+  conflict: boolean;
+  message: string;
+}
+
 let swarmCounter = 0;
 /** Process-unique swarm id, no platform globals. */
 export function createSwarmId(): string {
@@ -50,6 +100,32 @@ export interface SwarmWorkspace {
   ): Promise<string | null>;
   /** Remove a worktree previously created (best-effort). `worktreeDir` is absolute. */
   removeWorktree(repoDir: string, worktreeDir: string): Promise<void>;
+  /**
+   * Summarize an agent branch's work (files ±, commits, dirty) vs the repo's
+   * current branch. Best-effort; never throws.
+   */
+  reviewWorktree(
+    repoDir: string,
+    branch: string,
+    worktreeDir: string,
+  ): Promise<WorktreeReview>;
+  /**
+   * Land an agent branch into the repo's current branch. Auto-commits any
+   * uncommitted worktree edits first. `squash` collapses to one commit. On
+   * conflict the merge is aborted and `{ok:false, conflict:true}` returned.
+   */
+  mergeWorktree(
+    repoDir: string,
+    branch: string,
+    worktreeDir: string,
+    opts: { squash: boolean },
+  ): Promise<MergeResult>;
+  /** Remove an agent's worktree AND delete its branch (best-effort). */
+  discardWorktree(
+    repoDir: string,
+    worktreeDir: string,
+    branch: string,
+  ): Promise<void>;
   /**
    * Create the blackboard directory and write `CHORUS_SWARM.md` into it under
    * `baseCwd`. Returns the absolute directory path, or null if unavailable.

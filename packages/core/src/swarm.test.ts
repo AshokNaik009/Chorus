@@ -3,7 +3,9 @@ import {
   broadcastTargets,
   broadcastTo,
   buildAgentSystemPrompt,
+  clampSwarmWorkers,
   formatBroadcast,
+  MAX_SWARM_AGENTS,
   planAgentWorktrees,
   SWARM_INTERRUPT,
   SwarmOrchestrator,
@@ -33,6 +35,22 @@ class RecordingWriter implements SwarmWriter {
     this.writes.push({ sessionId, data });
   }
 }
+
+describe('clampSwarmWorkers', () => {
+  const mk = (n: number) => Array.from({ length: n }, (_, i) => i);
+
+  it('caps at MAX_SWARM_AGENTS (the 6-pane layout limit)', () => {
+    expect(MAX_SWARM_AGENTS).toBe(6);
+    expect(clampSwarmWorkers(mk(9))).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  it('returns the same list when at or under the cap', () => {
+    const six = mk(6);
+    expect(clampSwarmWorkers(six)).toBe(six);
+    expect(clampSwarmWorkers(mk(3))).toEqual([0, 1, 2]);
+    expect(clampSwarmWorkers([])).toEqual([]);
+  });
+});
 
 describe('broadcastTargets', () => {
   it('returns every member with no allow-list', () => {

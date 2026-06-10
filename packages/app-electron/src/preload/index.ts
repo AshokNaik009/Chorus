@@ -39,12 +39,22 @@ const api: PaneApi = {
     ipcRenderer.invoke(IPC.createWorktree, repoDir, worktreeSubdir, branch),
   removeWorktree: (repoDir, worktreeDir) =>
     ipcRenderer.invoke(IPC.removeWorktree, repoDir, worktreeDir),
+  reviewWorktree: (repoDir, branch, worktreeDir) =>
+    ipcRenderer.invoke(IPC.reviewWorktree, repoDir, branch, worktreeDir),
+  mergeWorktree: (repoDir, branch, worktreeDir, opts) =>
+    ipcRenderer.invoke(IPC.mergeWorktree, repoDir, branch, worktreeDir, opts),
+  discardWorktree: (repoDir, worktreeDir, branch) =>
+    ipcRenderer.invoke(IPC.discardWorktree, repoDir, worktreeDir, branch),
   captureSessionId: (paneSessionId, cwd) =>
     ipcRenderer.invoke(IPC.captureSessionId, paneSessionId, cwd),
+  hasConversation: (claudeSessionId, cwd) =>
+    ipcRenderer.invoke(IPC.hasConversation, claudeSessionId, cwd),
   exportConversations: (items) =>
     ipcRenderer.invoke(IPC.exportConversations, items),
   importConversations: (refs) =>
     ipcRenderer.invoke(IPC.importConversations, refs),
+  readContextHealth: (claudeSessionId, cwd) =>
+    ipcRenderer.invoke(IPC.readContextHealth, claudeSessionId, cwd),
 };
 
 contextBridge.exposeInMainWorld('paneApi', api);

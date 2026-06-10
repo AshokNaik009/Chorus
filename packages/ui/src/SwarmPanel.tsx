@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { SessionStatus, Workspace } from '@app/core';
+import { MAX_SWARM_AGENTS, type SessionStatus, type Workspace } from '@app/core';
 import { StatusBadge } from './StatusBadge.js';
 
 export interface SwarmPanelProps {
@@ -110,7 +110,7 @@ export function SwarmPanel(props: SwarmPanelProps) {
   ]);
   const [foAutoStart, setFoAutoStart] = useState(true);
   const validWorkers = foWorkers.filter((w) => w.role.trim());
-  const maxWorkers = 6;
+  const maxWorkers = MAX_SWARM_AGENTS;
   const dirReady = foDir.trim().length > 0;
 
   // Live git-repo check on the chosen directory: worktree isolation needs a repo.
@@ -401,14 +401,21 @@ export function SwarmPanel(props: SwarmPanelProps) {
               </div>
             ))}
           </div>
-          <button
-            style={{ ...ghost, alignSelf: 'flex-start' }}
-            onClick={() => setFoWorkers((p) => (p.length >= maxWorkers ? p : [...p, { role: '', task: '', dir: '' }]))}
-            disabled={foWorkers.length >= maxWorkers}
-            title={`Up to ${maxWorkers} worker agents`}
-          >
-            + agent
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button
+              style={{ ...ghost, alignSelf: 'flex-start' }}
+              onClick={() => setFoWorkers((p) => (p.length >= maxWorkers ? p : [...p, { role: '', task: '', dir: '' }]))}
+              disabled={foWorkers.length >= maxWorkers}
+              title={`Up to ${maxWorkers} worker agents`}
+            >
+              + agent
+            </button>
+            {foWorkers.length >= maxWorkers && (
+              <span style={{ ...muted, color: 'var(--status-waiting)' }}>
+                Max {maxWorkers} agents — the grid shows one pane each.
+              </span>
+            )}
+          </div>
 
           <div style={muted}>
             Each agent is told to verify its own work (write/run tests, meet the

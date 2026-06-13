@@ -29,6 +29,31 @@ open-source take on the BridgeSpace / cmux idea, scoped to Claude Code.
 - **Persistence** — workspaces, layouts, sessions and cwds survive a reload
   (web: localStorage) or relaunch (desktop: a JSON file in userData). Saved
   sessions are re-spawned automatically.
+- **Manual vs Swarm modes** — a workspace is either a hand-driven grid of
+  terminals (pick 1–6 panes from a dropdown) or a swarm board; switching modes
+  confirms first if live sessions would be lost.
+- **Agent swarms** — fan one task out to up to **6** role-named agents (one pane
+  each — the grid's limit), each launched as a real Claude Code TUI with its task
+  as the first prompt and a role system-prompt. Broadcast a message to all (or
+  selected) agents, or stop every agent with one click.
+- **Git worktree isolation** — each swarm agent whose directory is a git repo
+  gets its **own branch + worktree** so agents never trample each other's files
+  (see [Agent swarms & git worktrees](#agent-swarms--git-worktrees)).
+- **Review & merge** — when the agents finish, review each branch's diff (files
+  ±, commits, dirty state) and **Merge / Squash / Discard** it into the repo's
+  current branch, right from the app.
+- **Context health** — every pane shows a live `NN%` context-window occupancy
+  badge (green < 50%, amber < 70%, red ≥ 70%; tune via `CHORUS_HANDOFF_PCT` /
+  `CHORUS_HANDOFF_WATCH_PCT`). Past the red line, a **Hand off** button copies a
+  handoff-brief scaffold for starting a fresh session.
+- **Voice dictation** — on-device WASM Whisper into the focused pane (no cloud
+  STT).
+- **Export / import** — portable `.chorus` bundles: workspace layout everywhere,
+  plus full conversation transcripts on desktop. Every Claude pane's session id
+  is pinned at launch (`--session-id`) and saved, so an import resumes **exactly
+  that conversation** (`--resume <id>`); importing a session that is still live
+  in the current list forks it (`--fork-session`) instead of clobbering the
+  running one.
 
 ## Architecture
 
@@ -52,6 +77,37 @@ packages/
 
 The single seam between UI and host is `PtyBackend` (terminal I/O) and
 `Persistence` (workspace state). See `packages/core/src/`.
+
+## Agent swarms & git worktrees
+
+Fan-out (`Swarm` mode → **Fan out**) turns one task into up to 6 parallel
+Claude Code agents. Per agent, Chorus:
+
+1. **Checks the agent's directory** — each worker can point at its own dir, so
+   one swarm can span several repos.
+2. **Creates an isolated worktree** when that dir is a git repo:
+   - branch `chorus/<swarm>-<runid>/<role>` off the repo's current `HEAD`
+     (the `<runid>` keeps re-runs of a same-named swarm from colliding with the
+     previous run's branches);
+   - worktree at `<repo>/.chorus/<swarm>-<runid>/<role>` — under the repo so the
+     work is visible where you asked for it; `.chorus/` is added to the repo's
+     *local* ignore (`.git/info/exclude`), never to a tracked `.gitignore`.
+   - If worktree creation fails (or the dir isn't a repo, or the host is the web
+     harness), the agent falls back to running directly in the directory and its
+     system prompt says so honestly — isolated agents are told to commit when
+     done, shared-dir agents are told to stay in their lane.
+3. **Launches the agent** in that worktree via CLI args (task as the positional
+   first prompt, role framing via `--append-system-prompt`, optional
+   `--dangerously-skip-permissions` when auto-start is on). No TUI typing, no
+   MCP server. Each agent self-verifies its own slice — there is no separate
+   verifier agent.
+
+When agents finish, the **Review** view summarizes each branch vs. the repo's
+current branch (files ±, commits, uncommitted edits) and offers **Merge**
+(auto-commits dirty worktree edits first), **Squash**, or **Discard** (removes
+the worktree *and* deletes the branch). On a merge conflict the merge is aborted
+and the base branch left intact. Worktrees are cleaned up on swarm end,
+workspace close, or the next fan-out, so they don't accumulate.
 
 ## Requirements
 
@@ -127,10 +183,12 @@ in the app's `userData` directory.
 | **M11** | 11 | Workspace export/import — portable `.chorus` bundle (both hosts) | ✅ |
 | **M9** | 9 | Voice dictation into the focused pane (on-device WASM Whisper) | ✅ |
 | **M10** | 10 | Agent swarm — broadcast, fan-out, shared blackboard, swarm view | ✅ |
-| **M12** | 11 | Conversation/memory export/import + resume (Electron, Layer 2) | ✅\* |
-
-> \* M12 is code-complete and builds; the `~/.claude` resume round-trip needs
-> on-machine confirmation (see `docs/memory-capabilities.md`).
+| **M12** | 11 | Conversation/memory export/import + resume (Electron, Layer 2) | ✅ |
+| — | 10 | Swarm v2 — CLI-arg agent launch, **git worktree isolation per agent**, per-agent self-verification | ✅ |
+| — | 10 | Review & merge — per-agent branch diff, Merge / Squash / Discard into the current branch | ✅ |
+| — | — | Explicit Manual vs Swarm workspace modes; swarm fan-out capped at 6 agents | ✅ |
+| — | — | Context-health badge (% of model window) + handoff-brief export | ✅ |
+| — | 11 | Exact session resume — ids pinned at launch (`--session-id`), `--resume` on import, `--fork-session` when the conversation is still live | ✅ |
 
 > Beyond the PRD v1: the multi-workspace model, the two-tier sidebar, the 1×3 /
 > 2×3 layouts, pane maximize, and session naming are agreed extensions. **Chorus

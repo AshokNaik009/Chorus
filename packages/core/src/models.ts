@@ -90,6 +90,13 @@ export interface Workspace {
    * older saves; treated as 'manual'.
    */
   mode?: 'manual' | 'swarm';
+  /**
+   * How the panes are presented: 'grid' (the default — every terminal visible
+   * at once in a resizable split, Chorus's signature view) or 'tabs' (one
+   * terminal at a time behind a Chrome-style tab strip). Absent on older saves;
+   * treated as 'grid'. Orthogonal to `mode`: a swarm can be viewed either way.
+   */
+  view?: 'grid' | 'tabs';
   layout: LayoutNode;
   /** Configs for panes that have been started (a pane may exist unstarted). */
   sessions: SessionConfig[];

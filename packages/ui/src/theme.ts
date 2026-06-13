@@ -1,42 +1,46 @@
 import type { ITheme } from '@xterm/xterm';
 
-/** The single dark theme shipped in v1 (PRD §3: one dark theme only). */
+/**
+ * The single dark theme shipped in v1 (PRD §3: one dark theme only).
+ * herdr design system — Catppuccin Mocha.
+ */
 export const darkTheme = {
-  bg: '#0e1116',
-  bgElevated: '#161b22',
-  border: '#272d36',
-  fg: '#c9d1d9',
-  fgMuted: '#7d8590',
-  accent: '#58a6ff',
-  // status colors
-  spawning: '#7d8590',
-  running: '#3fb950',
-  waiting: '#d29922',
-  idle: '#58a6ff',
-  exited: '#6e7681',
+  bg: '#1e1e2e', // base
+  bgElevated: '#181825', // mantle
+  bgDeep: '#11111b', // crust (terminal)
+  border: 'rgba(205,214,244,0.10)', // line
+  fg: '#cdd6f4', // text
+  fgMuted: '#7f849c', // faint
+  accent: '#cba6f7', // mauve
+  // status colors (Chorus names mapped to herdr signal palette)
+  spawning: '#6c7086', // unknown
+  running: '#f9e2af', // working
+  waiting: '#f38ba8', // blocked
+  idle: '#a6e3a1', // idle
+  exited: '#6c7086', // unknown
 } as const;
 
-/** xterm.js terminal theme matching the app dark theme. */
+/** xterm.js terminal theme — Catppuccin Mocha, on the crust (deepest) surface. */
 export const xtermTheme: ITheme = {
-  background: darkTheme.bg,
-  foreground: darkTheme.fg,
-  cursor: darkTheme.accent,
-  cursorAccent: darkTheme.bg,
-  selectionBackground: '#2d4f76',
-  black: '#0e1116',
-  red: '#ff7b72',
-  green: '#3fb950',
-  yellow: '#d29922',
-  blue: '#58a6ff',
-  magenta: '#bc8cff',
-  cyan: '#39c5cf',
-  white: '#b1bac4',
-  brightBlack: '#6e7681',
-  brightRed: '#ffa198',
-  brightGreen: '#56d364',
-  brightYellow: '#e3b341',
-  brightBlue: '#79c0ff',
-  brightMagenta: '#d2a8ff',
-  brightCyan: '#56d4dd',
-  brightWhite: '#f0f6fc',
+  background: '#11111b', // crust
+  foreground: '#cdd6f4', // text
+  cursor: '#cba6f7', // mauve
+  cursorAccent: '#11111b',
+  selectionBackground: '#45475a', // surface1
+  black: '#45475a',
+  red: '#f38ba8',
+  green: '#a6e3a1',
+  yellow: '#f9e2af',
+  blue: '#89b4fa',
+  magenta: '#cba6f7',
+  cyan: '#94e2d5',
+  white: '#bac2de',
+  brightBlack: '#585b70',
+  brightRed: '#f38ba8',
+  brightGreen: '#a6e3a1',
+  brightYellow: '#f9e2af',
+  brightBlue: '#89b4fa',
+  brightMagenta: '#f5c2e7',
+  brightCyan: '#94e2d5',
+  brightWhite: '#a6adc8',
 };

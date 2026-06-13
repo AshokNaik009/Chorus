@@ -54,6 +54,7 @@ import {
   type WorkspaceState,
 } from '@app/core';
 import { LayoutView } from './LayoutView.js';
+import { TabbedView } from './TabbedView.js';
 import { Sidebar } from './Sidebar.js';
 import { SessionTerminal } from './SessionTerminal.js';
 import { PaneLauncher } from './PaneLauncher.js';
@@ -140,6 +141,8 @@ export function App({
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [maximizedId, setMaximizedId] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // Whether the whole workspace sidebar is shown or collapsed to a slim rail.
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   // A pending destructive action awaiting confirmation (only raised when live
   // sessions would be lost). Cleared on confirm/cancel.
   const [pendingConfirm, setPendingConfirm] = useState<{
@@ -311,6 +314,7 @@ export function App({
 
   const active = state ? getActiveWorkspace(state) : undefined;
   const swarmMode = active?.mode === 'swarm';
+  const currentView: 'grid' | 'tabs' = active?.view ?? 'grid';
 
   // Tear down the swarm's git worktrees. Sweeps BOTH the in-memory list (this
   // session's fan-out) AND the worktrees recorded on the active workspace's
@@ -585,6 +589,61 @@ export function App({
   const toggleMaximize = (sessionId: string) => {
     setMaximizedId((cur) => (cur === sessionId ? null : sessionId));
     setFocusedId(sessionId);
+  };
+
+  // ---- view mode: grid (default, all panes at once) vs tabs (one at a time) ----
+
+  // Switch the active workspace between the split grid and the tab strip. The
+  // panes themselves are untouched — only their presentation changes — so no
+  // terminal is torn down. Re-fit the visible terminal once the new view lays out.
+  const setView = (view: 'grid' | 'tabs') => {
+    if (!state || !active || currentView === view) return;
+    setState(updateWorkspace(state, active.id, { view }));
+    setMaximizedId(null);
+    requestAnimationFrame(() => {
+      const id = focusedId ?? collectSessionIds(active.layout)[0];
+      if (id) handles.current.get(id)?.fit();
+    });
+  };
+
+  // Activate a tab: it becomes the visible pane. Re-fit xterm after it un-hides
+  // (going display:none -> block resizes it from 0; fit catches up immediately).
+  const activateTab = (sessionId: string) => {
+    setFocusedId(sessionId);
+    requestAnimationFrame(() => handles.current.get(sessionId)?.fit());
+  };
+
+  // Append one empty terminal without disturbing the others (the tab strip "+").
+  // Existing panes keep their sessionIds, so their terminals stay mounted; only
+  // the split geometry is rebuilt (invisible in tabs view anyway).
+  const addPane = () => {
+    if (!state || !active) return;
+    const ids = collectSessionIds(active.layout);
+    const newId = createSessionId();
+    setState(
+      updateWorkspace(state, active.id, {
+        layout: buildGrid(ids.length + 1, [...ids, newId]),
+      }),
+    );
+    setFocusedId(newId);
+    setMaximizedId(null);
+  };
+
+  // Drag-to-reorder tabs (browser-style). Rebuilds the layout in the new order;
+  // every sessionId is preserved, so terminals stay mounted — only their
+  // position changes. No-op unless `orderedIds` is a permutation of the current
+  // panes. (Custom grid sash sizes reset, an acceptable trade for reordering.)
+  const reorderPanes = (orderedIds: string[]) => {
+    if (!state || !active) return;
+    const current = collectSessionIds(active.layout);
+    if (orderedIds.length !== current.length) return;
+    const set = new Set(current);
+    if (!orderedIds.every((id) => set.has(id))) return;
+    setState(
+      updateWorkspace(state, active.id, {
+        layout: buildGrid(orderedIds.length, orderedIds),
+      }),
+    );
   };
 
   // ---- memory import/export (PRD Epic 11) ----
@@ -1123,24 +1182,26 @@ export function App({
           >
             {title ?? 'empty pane'}
           </span>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleMaximize(sessionId);
-            }}
-            title={maximized ? 'Restore' : 'Maximize'}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--fg-muted)',
-              cursor: 'pointer',
-              fontSize: 13,
-              lineHeight: 1,
-              padding: '0 2px',
-            }}
-          >
-            {maximized ? '🗗' : '🗖'}
-          </button>
+          {currentView !== 'tabs' && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleMaximize(sessionId);
+              }}
+              title={maximized ? 'Restore' : 'Maximize'}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--fg-muted)',
+                cursor: 'pointer',
+                fontSize: 13,
+                lineHeight: 1,
+                padding: '0 2px',
+              }}
+            >
+              {maximized ? '🗗' : '🗖'}
+            </button>
+          )}
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -1215,20 +1276,88 @@ export function App({
         color: 'var(--fg)',
       }}
     >
-      <Sidebar
-        state={state}
-        statusOf={statusOf}
-        collapsed={collapsed}
-        focusedId={focusedId}
-        onSelectWorkspace={selectWorkspace}
-        onToggleCollapse={toggleCollapse}
-        onNewWorkspace={newWorkspace}
-        onRenameWorkspace={renameWorkspace}
-        onCloseWorkspace={closeWorkspace}
-        onFocusSession={focusSession}
-        onRenameSession={renameSession}
-        onCloseSession={closeSession}
-      />
+      {sidebarOpen ? (
+        <Sidebar
+          state={state}
+          statusOf={statusOf}
+          collapsed={collapsed}
+          focusedId={focusedId}
+          onSelectWorkspace={selectWorkspace}
+          onToggleCollapse={toggleCollapse}
+          onNewWorkspace={newWorkspace}
+          onRenameWorkspace={renameWorkspace}
+          onCloseWorkspace={closeWorkspace}
+          onFocusSession={focusSession}
+          onRenameSession={renameSession}
+          onCloseSession={closeSession}
+          onCollapse={() => setSidebarOpen(false)}
+        />
+      ) : (
+        <div
+          style={{
+            width: 40,
+            flexShrink: 0,
+            height: '100%',
+            background: 'var(--bg-elevated)',
+            borderRight: '1px solid var(--border)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 10,
+            padding: '11px 0',
+          }}
+        >
+          <button
+            onClick={() => setSidebarOpen(true)}
+            title="Expand sidebar"
+            aria-label="Expand sidebar"
+            style={{
+              background: 'transparent',
+              color: 'var(--fg-muted)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: '3px 7px',
+              cursor: 'pointer',
+              fontSize: 12,
+              lineHeight: 1,
+            }}
+          >
+            »
+          </button>
+          <button
+            onClick={() => {
+              setSidebarOpen(true);
+              newWorkspace();
+            }}
+            title="New workspace"
+            aria-label="New workspace"
+            style={{
+              background: 'transparent',
+              color: 'var(--fg-muted)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: '3px 7px',
+              cursor: 'pointer',
+              fontSize: 13,
+              lineHeight: 1,
+            }}
+          >
+            +
+          </button>
+          <span
+            className="eyebrow"
+            title={`${state.workspaces.length} workspaces`}
+            style={{
+              writingMode: 'vertical-rl',
+              transform: 'rotate(180deg)',
+              marginTop: 6,
+              letterSpacing: '0.28em',
+            }}
+          >
+            Workspaces · {state.workspaces.length}
+          </span>
+        </div>
+      )}
 
       <div
         style={{
@@ -1248,7 +1377,17 @@ export function App({
             borderBottom: '1px solid var(--border)',
           }}
         >
-          <strong style={{ color: 'var(--accent)' }}>Chorus</strong>
+          <strong
+            className="disp"
+            style={{
+              color: 'var(--accent)',
+              fontWeight: 700,
+              fontSize: 16,
+              letterSpacing: '-0.02em',
+            }}
+          >
+            chorus
+          </strong>
           <span
             style={{
               color: 'var(--fg)',
@@ -1262,6 +1401,47 @@ export function App({
           >
             {active.name}
           </span>
+          <div
+            role="group"
+            aria-label="View mode"
+            title="Grid shows every terminal at once; Tabs shows one at a time"
+            style={{
+              display: 'inline-flex',
+              padding: 2,
+              gap: 2,
+              borderRadius: 8,
+              border: '1px solid var(--border)',
+              background: 'var(--bg)',
+            }}
+          >
+            {(['grid', 'tabs'] as const).map((v) => {
+              const on = currentView === v;
+              return (
+                <button
+                  key={v}
+                  onClick={() => setView(v)}
+                  title={v === 'grid' ? 'Grid view' : 'Tabs view'}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    background: on ? 'var(--bg-elevated)' : 'transparent',
+                    color: on ? 'var(--accent)' : 'var(--fg-muted)',
+                    border: '1px solid',
+                    borderColor: on ? 'var(--border)' : 'transparent',
+                    borderRadius: 6,
+                    padding: '3px 9px',
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                    fontSize: 11,
+                    fontWeight: on ? 600 : 400,
+                  }}
+                >
+                  {v === 'grid' ? '⊞' : '◫'} {v === 'grid' ? 'Grid' : 'Tabs'}
+                </button>
+              );
+            })}
+          </div>
           {swarmMode ? (
             <>
               <span
@@ -1444,7 +1624,21 @@ export function App({
 
         <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
           <ErrorBoundary resetKey={active.id}>
-            {showMaximized ? (
+            {currentView === 'tabs' ? (
+              <TabbedView
+                sessionIds={collectSessionIds(active.layout)}
+                activeId={focusedId}
+                onActivate={activateTab}
+                onClose={closePane}
+                onAdd={paneCount < 6 && !swarmMode ? addPane : undefined}
+                onReorder={reorderPanes}
+                titleOf={(id) =>
+                  state ? findSession(state, id)?.cfg.title : undefined
+                }
+                statusOf={statusOf}
+                renderPane={renderPane}
+              />
+            ) : showMaximized ? (
               renderPane(maximizedId!)
             ) : (
               <LayoutView
@@ -1506,7 +1700,7 @@ export function App({
             transform: 'translateX(-50%)',
             zIndex: 61,
             background: 'var(--status-waiting)',
-            color: '#1a1a1a',
+            color: 'var(--crust)',
             border: '1px solid var(--border)',
             borderRadius: 10,
             padding: '8px 14px',
@@ -1576,7 +1770,7 @@ export function App({
                 }}
                 style={{
                   background: 'var(--status-waiting)',
-                  color: '#1a1a1a',
+                  color: 'var(--crust)',
                   border: 'none',
                   borderRadius: 6,
                   padding: '7px 14px',

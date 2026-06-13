@@ -34,7 +34,7 @@ const box: React.CSSProperties = {
 };
 const primary: React.CSSProperties = {
   background: 'var(--accent)',
-  color: '#0e1116',
+  color: 'var(--crust)',
   border: 'none',
   borderRadius: 6,
   padding: '6px 12px',

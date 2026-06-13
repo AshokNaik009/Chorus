@@ -15,6 +15,8 @@ export interface SidebarProps {
   onFocusSession: (id: string) => void;
   onRenameSession: (id: string, title: string) => void;
   onCloseSession: (id: string) => void;
+  /** Collapse the whole sidebar to a slim rail (handled by the parent). */
+  onCollapse?: () => void;
 }
 
 function basename(p: string): string {
@@ -317,30 +319,51 @@ export function Sidebar(props: SidebarProps) {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '10px 12px',
-          fontSize: 11,
-          textTransform: 'uppercase',
-          letterSpacing: 0.5,
-          color: 'var(--fg-muted)',
+          gap: 6,
+          padding: '11px 12px',
           borderBottom: '1px solid var(--border)',
         }}
       >
-        <span>Workspaces · {props.state.workspaces.length}</span>
-        <button
-          onClick={props.onNewWorkspace}
-          title="New workspace"
-          style={{
-            background: 'var(--bg)',
-            color: 'var(--fg)',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            padding: '2px 8px',
-            cursor: 'pointer',
-            fontSize: 12,
-          }}
-        >
-          + new
-        </button>
+        <span className="eyebrow">
+          Workspaces · {props.state.workspaces.length}
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button
+            onClick={props.onNewWorkspace}
+            title="New workspace"
+            style={{
+              background: 'var(--bg)',
+              color: 'var(--fg)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: '2px 8px',
+              cursor: 'pointer',
+              fontSize: 12,
+              fontFamily: 'inherit',
+            }}
+          >
+            + new
+          </button>
+          {props.onCollapse && (
+            <button
+              onClick={props.onCollapse}
+              title="Collapse sidebar"
+              aria-label="Collapse sidebar"
+              style={{
+                background: 'transparent',
+                color: 'var(--fg-muted)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                padding: '2px 7px',
+                cursor: 'pointer',
+                fontSize: 12,
+                lineHeight: 1,
+              }}
+            >
+              «
+            </button>
+          )}
+        </div>
       </div>
       <div
         style={{

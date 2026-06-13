@@ -141,7 +141,7 @@ export function HelpButton() {
                 onClick={() => setOpen(false)}
                 style={{
                   background: 'var(--accent)',
-                  color: '#0e1116',
+                  color: 'var(--crust)',
                   border: 'none',
                   borderRadius: 6,
                   padding: '8px 16px',

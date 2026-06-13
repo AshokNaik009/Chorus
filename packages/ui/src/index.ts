@@ -10,6 +10,8 @@ export { TerminalPane } from './TerminalPane.js';
 export type { TerminalPaneHandle, TerminalPaneProps } from './TerminalPane.js';
 export { SessionTerminal } from './SessionTerminal.js';
 export { LayoutView } from './LayoutView.js';
+export { TabbedView } from './TabbedView.js';
+export type { TabbedViewProps } from './TabbedView.js';
 export { Sidebar } from './Sidebar.js';
 export { PaneLauncher } from './PaneLauncher.js';
 export { StatusBadge } from './StatusBadge.js';

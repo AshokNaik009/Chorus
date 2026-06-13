@@ -89,7 +89,7 @@ export function PaneLauncher({ defaultCwd, onStart }: PaneLauncherProps) {
             style={{
               flex: 1,
               background: 'var(--accent)',
-              color: '#0e1116',
+              color: 'var(--crust)',
               border: 'none',
               borderRadius: 6,
               padding: '7px 12px',

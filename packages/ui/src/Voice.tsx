@@ -178,7 +178,7 @@ export function useVoiceHotkey(
 const micBtn = (active: boolean): React.CSSProperties => ({
   background: active ? 'var(--status-waiting)' : 'transparent',
   border: 'none',
-  color: active ? '#1a1a1a' : 'var(--fg-muted)',
+  color: active ? 'var(--crust)' : 'var(--fg-muted)',
   cursor: 'pointer',
   fontSize: 13,
   lineHeight: 1,
@@ -272,7 +272,7 @@ export function RecordingIndicator({
             style={{
               background: 'var(--accent)',
               border: 'none',
-              color: '#0e1116',
+              color: 'var(--crust)',
               borderRadius: 6,
               padding: '3px 10px',
               cursor: 'pointer',
@@ -425,7 +425,7 @@ export function VoiceSettingsButton({
                 onClick={() => setOpen(false)}
                 style={{
                   background: 'var(--accent)',
-                  color: '#0e1116',
+                  color: 'var(--crust)',
                   border: 'none',
                   borderRadius: 6,
                   padding: '7px 14px',

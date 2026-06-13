@@ -58,6 +58,12 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       const fit = fitRef.current;
       const term = termRef.current;
       if (!fit || !term) return;
+      // Never fit a zero-size container (hidden tab, collapsed pane). The fit
+      // addon would clamp to its minimum (~2 cols) and resize the PTY down,
+      // wrapping the program's output to a thin strip. Skip until it has size;
+      // the ResizeObserver re-fits the moment it's shown again.
+      const el = containerRef.current;
+      if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
       try {
         fit.fit();
       } catch {
@@ -89,9 +95,9 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
 
       const term = new Terminal({
         fontFamily:
-          'ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", monospace',
+          '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", monospace',
         fontSize: 13,
-        lineHeight: 1.2,
+        lineHeight: 1.25,
         cursorBlink: true,
         allowProposedApi: true,
         scrollback: 5000,

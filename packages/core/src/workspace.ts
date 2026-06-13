@@ -212,6 +212,8 @@ function isWorkspace(v: unknown): v is Workspace {
     typeof w.id === 'string' &&
     typeof w.name === 'string' &&
     typeof w.defaultCwd === 'string' &&
+    (w.mode === undefined || w.mode === 'manual' || w.mode === 'swarm') &&
+    (w.view === undefined || w.view === 'grid' || w.view === 'tabs') &&
     isLayoutNode(w.layout) &&
     Array.isArray(w.sessions) &&
     w.sessions.every(isSessionConfig) &&

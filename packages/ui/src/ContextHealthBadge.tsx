@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import type { ContextHealth, ContextTier } from '@app/core';
 
-/** Tier → color. Green healthy, amber watch, red hand-off (GitHub-ish palette). */
+/** Tier → color, mapped to the herdr signal palette (idle/working/blocked). */
 const TIER_COLOR: Record<ContextTier, string> = {
-  healthy: '#3fb950',
-  watch: '#d29922',
-  handoff: '#f85149',
+  healthy: 'var(--idle)',
+  watch: 'var(--working)',
+  handoff: 'var(--blocked)',
 };
+const OK = 'var(--idle)';
 
 const TIER_LABEL: Record<ContextTier, string> = {
   healthy: 'context',
@@ -74,9 +75,9 @@ export function ContextHealthBadge({
             padding: '1px 8px',
             borderRadius: 999,
             cursor: 'pointer',
-            color: copied ? '#3fb950' : color,
+            color: copied ? OK : color,
             background: 'transparent',
-            border: `1px solid color-mix(in srgb, ${copied ? '#3fb950' : color} 55%, transparent)`,
+            border: `1px solid color-mix(in srgb, ${copied ? OK : color} 55%, transparent)`,
           }}
         >
           {copied ? 'Copied ✓' : 'Hand off'}

@@ -1,10 +1,12 @@
 # Chorus — Parallel Claude Code Terminal Manager
 
-Run multiple Claude Code sessions in parallel inside a single window: a
-resizable grid of terminal panes grouped into **workspaces**, a two-tier sidebar
-with live status badges, adjustable layouts, and pane maximize. Workspaces,
-layouts and sessions are **persisted** and restored on relaunch. A focused,
-open-source take on the BridgeSpace / cmux idea, scoped to Claude Code.
+Run multiple Claude Code sessions in parallel inside a single window: terminal
+panes grouped into **workspaces**, viewable as a resizable **grid** (every agent
+at once — the signature view) or a Chrome-style **tab strip** (one at a time,
+drag to reorder), with a two-tier collapsible sidebar, live status badges, and
+pane maximize. Workspaces, layouts, views and sessions are **persisted** and
+restored on relaunch. A focused, open-source take on the BridgeSpace / cmux idea,
+scoped to Claude Code, dressed in a Catppuccin Mocha design system.
 
 ![Chorus running three Claude Code sessions in a 1×3 layout, with the two-tier workspace sidebar, live status badges, and the Voice / Export / Import controls in the header](docs/chorus-screenshot.png)
 
@@ -14,11 +16,24 @@ open-source take on the BridgeSpace / cmux idea, scoped to Claude Code.
 
 ## Features
 
+- **Grid & Tabs views** — toggle each workspace between a resizable split
+  **grid** (every terminal visible at once) and a browser-style **tab strip**
+  (one terminal at a time). Switching is non-destructive — terminals stay
+  mounted, so no PTY restart and no lost scrollback — and the choice is
+  remembered per workspace.
+- **Drag-to-reorder tabs** — in Tabs view, drag a tab left/right to reorder the
+  panes, exactly like rearranging browser tabs; the dragged terminal keeps
+  running through the move.
 - **Layout templates** — 1, 1×2, 1×3, 2×2, 2×3 panes (the layout tree supports
   arbitrary nesting), with draggable dividers that reflow the PTYs.
 - **Multi-workspace** — a workspace is a named group of sessions with its own
   layout and a default working directory new panes inherit. The two-tier sidebar
-  shows workspaces as collapsible groups with their sessions nested underneath.
+  shows workspaces as collapsible groups with their sessions nested underneath,
+  and the whole sidebar collapses to a slim rail to reclaim space.
+- **Design system** — Catppuccin Mocha palette with a dual-monospace type system
+  (Martian Mono for display, IBM Plex Mono for everything), a blocked/working/
+  idle state-color signal vocabulary, visible keyboard focus, and
+  `prefers-reduced-motion` honored.
 - **Naming** — name a session when you launch it, and rename any workspace or
   session anytime (✎ button, or double-click).
 - **Live status** — per-session badges (idle / waiting / running …) driven by
@@ -148,9 +163,13 @@ Open the printed URL (default http://localhost:5173).
 - Each pane is an independent session; input/output never cross panes.
 - Watch the **status badge** on each pane/sidebar row change as a turn runs.
 - Use the pane header's maximize button to zoom one pane and restore it.
-- In the **sidebar**: create workspaces (**+ new**), collapse groups, rename a
-  workspace or session (✎ / double-click), click a session to focus its pane,
-  **×** to close (kills the PTY and collapses the layout).
+- Flip the header's **Grid / Tabs** toggle — the same terminals re-present as a
+  split grid or a tab strip with no restart. In Tabs view, **drag a tab** to
+  reorder, use **+** to add a terminal, and **×** to close one.
+- In the **sidebar**: create workspaces (**+ new**), collapse the whole sidebar
+  to a rail (**«** / **»**), collapse individual groups, rename a workspace or
+  session (✎ / double-click), click a session to focus its pane, **×** to close
+  (kills the PTY and collapses the layout).
 - **Reload the page** → your workspaces, layouts and sessions come back (saved
   sessions are re-spawned).
 - Close the browser tab → all child PTYs are killed (no orphan processes).
@@ -189,6 +208,8 @@ in the app's `userData` directory.
 | — | — | Explicit Manual vs Swarm workspace modes; swarm fan-out capped at 6 agents | ✅ |
 | — | — | Context-health badge (% of model window) + handoff-brief export | ✅ |
 | — | 11 | Exact session resume — ids pinned at launch (`--session-id`), `--resume` on import, `--fork-session` when the conversation is still live | ✅ |
+| — | — | Grid ⇄ Tabs view toggle (per workspace), drag-to-reorder tabs, collapsible sidebar | ✅ |
+| — | — | herdr design system — Catppuccin Mocha palette + dual-monospace type + state-color signals | ✅ |
 
 > Beyond the PRD v1: the multi-workspace model, the two-tier sidebar, the 1×3 /
 > 2×3 layouts, pane maximize, and session naming are agreed extensions. **Chorus
@@ -198,7 +219,9 @@ in the app's `userData` directory.
 ## Notes
 
 - Uses **npm** workspaces (not pnpm).
-- One dark theme only in v1.
+- One dark theme — a Catppuccin Mocha design system. Display/body fonts (Martian
+  Mono / IBM Plex Mono) currently load via Google Fonts; bundling them locally
+  (`@fontsource`) for full offline use is a planned follow-up.
 - `@app/ui` depends only on `@app/core` interfaces — never a host package or
   `node-pty` directly. Hosts inject a `PtyBackend` + `Persistence`.
 - Auto-update (`electron-updater`) is not wired yet — a future addition.

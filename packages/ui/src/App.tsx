@@ -60,6 +60,7 @@ import { SessionTerminal } from './SessionTerminal.js';
 import { PaneLauncher } from './PaneLauncher.js';
 import { StatusBadge } from './StatusBadge.js';
 import { ContextHealthBadge } from './ContextHealthBadge.js';
+import { PaneControls } from './PaneControls.js';
 import { MemoryControls, type ExportPayload } from './MemoryControls.js';
 import {
   RecordingIndicator,
@@ -140,6 +141,8 @@ export function App({
   const [live, setLive] = useState<Session[]>([]);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [maximizedId, setMaximizedId] = useState<string | null>(null);
+  // Which pane's `⋯` overflow menu is open (one at a time), or null.
+  const [paneMenuId, setPaneMenuId] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   // Whether the whole workspace sidebar is shown or collapsed to a slim rail.
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -527,6 +530,20 @@ export function App({
     } catch {
       /* PTY already gone */
     }
+  };
+
+  // Kill a pane's PTY and let ensureSpawned bring it back from its saved config
+  // (resuming the Claude conversation if one is archived). Used by the pane's
+  // `⋯` overflow menu.
+  const restartPane = (sessionId: string) => {
+    if (!active) return;
+    try {
+      manager.remove(sessionId);
+    } catch {
+      /* PTY already gone */
+    }
+    handles.current.delete(sessionId);
+    void ensureSpawned(active);
   };
 
   // Reset the active workspace to a clean single pane (recovery from a broken
@@ -1182,44 +1199,26 @@ export function App({
           >
             {title ?? 'empty pane'}
           </span>
-          {currentView !== 'tabs' && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleMaximize(sessionId);
-              }}
-              title={maximized ? 'Restore' : 'Maximize'}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: 'var(--fg-muted)',
-                cursor: 'pointer',
-                fontSize: 13,
-                lineHeight: 1,
-                padding: '0 2px',
-              }}
-            >
-              {maximized ? '🗗' : '🗖'}
-            </button>
-          )}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              closePane(sessionId);
+          <PaneControls
+            sessionId={sessionId}
+            maximized={maximized}
+            canMaximize={currentView !== 'tabs'}
+            canAdd={paneCount < 6 && !swarmMode}
+            menuOpen={paneMenuId === sessionId}
+            onToggleMenu={() =>
+              setPaneMenuId((cur) => (cur === sessionId ? null : sessionId))
+            }
+            onCloseMenu={() => setPaneMenuId(null)}
+            onMaximize={() => toggleMaximize(sessionId)}
+            onAdd={addPane}
+            onClose={() => closePane(sessionId)}
+            onRename={() => {
+              const next = window.prompt('Rename pane', title ?? '');
+              if (next != null && next.trim()) renameSession(sessionId, next.trim());
             }}
-            title="Close pane"
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--fg-muted)',
-              cursor: 'pointer',
-              fontSize: 14,
-              lineHeight: 1,
-              padding: '0 2px',
-            }}
-          >
-            ✕
-          </button>
+            onRestart={() => restartPane(sessionId)}
+            isLive={isLive}
+          />
         </div>
 
         <div style={{ flex: 1, minHeight: 0 }}>

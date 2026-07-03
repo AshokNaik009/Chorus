@@ -1,8 +1,8 @@
 /**
  * Electron main process. Creates the window, owns the node-pty host, and
- * persists workspace state to a JSON file in userData. The renderer reuses
- * @app/ui + @app/core unchanged; everything Electron-specific lives here and in
- * the preload (PRD §11 — the host seam).
+ * persists workspace state to the shared ~/.chorus profile tree (@app/store).
+ * The renderer reuses @app/ui + @app/core unchanged; everything
+ * Electron-specific lives here and in the preload (PRD §11 — the host seam).
  */
 import path from 'node:path';
 import os from 'node:os';
@@ -20,6 +20,7 @@ import {
   type SpawnOptions,
   type WorkspaceState,
 } from '@app/core';
+import { FileTreeStore, resolveChorusHome } from '@app/store';
 import { IPC } from '../shared/ipc.js';
 import { PtyHost } from './pty-host.js';
 import {
@@ -33,27 +34,48 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** Persisted state file. Mirrors WebPersistence's localStorage key, on disk. */
-function stateFile(): string {
+// Workspace state lives in the ~/.chorus profile tree, shared with the web
+// harness (CHORUS_HOME overrides the root). Both hosts may run at once: writes
+// are per-file atomic and the last writer wins per file.
+const store = new FileTreeStore(resolveChorusHome(process.env));
+
+/** Pre-profile store: one JSON blob in userData. Read once, then retired. */
+function legacyStateFile(): string {
   return path.join(app.getPath('userData'), 'workspace-state.v2.json');
 }
 
+/**
+ * One-time import of the legacy blob into the profile tree, memoized so the
+ * renderer's double-load (React StrictMode) and every save await the same
+ * decision. Only runs when the profile is empty; the legacy file is renamed
+ * `.migrated` afterwards so the data stays recoverable but never re-imports.
+ */
+let migration: Promise<void> | null = null;
+function ensureMigrated(): Promise<void> {
+  migration ??= (async () => {
+    try {
+      if ((await store.load()) !== null) return; // profile already populated
+      const raw = await fs.readFile(legacyStateFile(), 'utf8');
+      const legacy = parseWorkspaceState(JSON.parse(raw));
+      if (!legacy) return;
+      await store.save(legacy);
+      await fs.rename(legacyStateFile(), legacyStateFile() + '.migrated');
+    } catch {
+      // no legacy file / unreadable — nothing to migrate
+    }
+  })();
+  return migration;
+}
+
 async function loadState(): Promise<WorkspaceState | null> {
-  try {
-    const raw = await fs.readFile(stateFile(), 'utf8');
-    return parseWorkspaceState(JSON.parse(raw));
-  } catch {
-    // missing / corrupt -> app falls back to a default workspace (US-6.1)
-    return null;
-  }
+  await ensureMigrated();
+  // Fresh read every invoke so a renderer reload picks up cross-host writes.
+  return store.load();
 }
 
 async function saveState(state: WorkspaceState): Promise<void> {
-  try {
-    await fs.writeFile(stateFile(), JSON.stringify(state), 'utf8');
-  } catch {
-    // disk error — non-fatal for an in-memory session
-  }
+  await ensureMigrated(); // never save before deciding migration
+  return store.save(state);
 }
 
 function createWindow(): void {

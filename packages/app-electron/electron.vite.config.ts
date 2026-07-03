@@ -12,7 +12,7 @@ import react from '@vitejs/plugin-react';
  */
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin({ exclude: ['@app/core'] })],
+    plugins: [externalizeDepsPlugin({ exclude: ['@app/core', '@app/store'] })],
   },
   preload: {
     plugins: [externalizeDepsPlugin({ exclude: ['@app/core'] })],

@@ -41,9 +41,14 @@ scoped to Claude Code, dressed in a Catppuccin Mocha design system.
   waiting session shows an attention dot.
 - **Maximize** — zoom one pane to fill the area; other panes stay mounted and
   their PTYs keep running.
-- **Persistence** — workspaces, layouts, sessions and cwds survive a reload
-  (web: localStorage) or relaunch (desktop: a JSON file in userData). Saved
-  sessions are re-spawned automatically.
+- **Persistence** — workspaces, layouts, sessions and cwds live in a shared
+  `~/.chorus/` profile folder (one JSON file per workspace/session/swarm,
+  Claude-Code-style; `CHORUS_HOME` overrides the root), written by both the
+  web harness and the desktop app, so state follows you between hosts and is
+  inspectable with `ls`/`cat`. Writes are atomic and only changed files are
+  rewritten; a corrupt file loses only its own entity. Saved sessions are
+  re-spawned automatically, and old localStorage / userData stores migrate in
+  automatically on first launch.
 - **Manual vs Swarm modes** — a workspace is either a hand-driven grid of
   terminals (pick 1–6 panes from a dropdown) or a swarm board; switching modes
   confirms first if live sessions would be lost.
@@ -80,13 +85,15 @@ TypeScript monorepo (npm workspaces + Turborepo). The UI depends only on
 packages/
   core/          @app/core — framework-agnostic models, the PtyBackend +
                  Persistence seams, status reducer, layout tree, workspace
-                 ops, OSC scanner (zero UI/host deps)
+                 ops, OSC scanner, ~/.chorus profile format (zero UI/host deps)
+  store/         @app/store — Node file-tree store for the ~/.chorus profile,
+                 shared by the Electron main process and the web dev server
   ui/            @app/ui   — React + xterm.js (TerminalPane, LayoutView,
                  two-tier Sidebar, PaneLauncher, StatusBadge, App)
-  app-web/       dev harness — Vite page + ws server + node-pty;
-                 WebPtyBackend + WebPersistence (localStorage)
-  app-electron/  Electron host — main: node-pty over IPC; preload:
-                 contextBridge; renderer: ElectronPtyBackend +
+  app-web/       dev harness — Vite page + http/ws server + node-pty;
+                 WebPtyBackend + WebFilePersistence (/state routes)
+  app-electron/  Electron host — main: node-pty over IPC + FileTreeStore;
+                 preload: contextBridge; renderer: ElectronPtyBackend +
                  ElectronPersistence + the same @app/ui App
 ```
 
@@ -171,7 +178,8 @@ Open the printed URL (default http://localhost:5173).
   session (✎ / double-click), click a session to focus its pane, **×** to close
   (kills the PTY and collapses the layout).
 - **Reload the page** → your workspaces, layouts and sessions come back (saved
-  sessions are re-spawned).
+  sessions are re-spawned) — served from `~/.chorus/`, which you can inspect
+  with `find ~/.chorus`.
 - Close the browser tab → all child PTYs are killed (no orphan processes).
 
 ### 3. Desktop app — Electron
@@ -186,8 +194,9 @@ npm run dist    -w app-electron   # electron-builder: dmg / nsis / AppImage
 npm run dist:dir -w app-electron  # unpacked build (no installer) for quick checks
 ```
 
-Installers land in `packages/app-electron/release/`. Persistence is a JSON file
-in the app's `userData` directory.
+Installers land in `packages/app-electron/release/`. Persistence is the shared
+`~/.chorus/` profile folder (a legacy `workspace-state.v2.json` in `userData`
+is migrated in once and renamed `.migrated`).
 
 ## Milestones
 
@@ -209,6 +218,7 @@ in the app's `userData` directory.
 | — | — | Context-health badge (% of model window) + handoff-brief export | ✅ |
 | — | 11 | Exact session resume — ids pinned at launch (`--session-id`), `--resume` on import, `--fork-session` when the conversation is still live | ✅ |
 | — | — | Grid ⇄ Tabs view toggle (per workspace), drag-to-reorder tabs, collapsible sidebar | ✅ |
+| — | — | `~/.chorus/` profile store — per-entity JSON files shared by both hosts, atomic diffed writes, legacy-store migration | ✅ |
 | — | — | herdr design system — Catppuccin Mocha palette + dual-monospace type + state-color signals | ✅ |
 
 > Beyond the PRD v1: the multi-workspace model, the two-tier sidebar, the 1×3 /

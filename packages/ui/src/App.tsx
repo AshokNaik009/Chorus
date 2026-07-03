@@ -77,7 +77,7 @@ import type { TerminalPaneHandle } from './TerminalPane.js';
 
 export interface AppProps {
   manager: SessionManager;
-  /** Loads/saves workspace state across restarts (localStorage / file). */
+  /** Loads/saves workspace state across restarts (the ~/.chorus profile). */
   persistence: Persistence;
   /** Prefilled cwd for brand-new workspaces / panes. */
   defaultCwd?: string;

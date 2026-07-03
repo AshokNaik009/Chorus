@@ -1,5 +1,8 @@
 /**
- * Dev-harness PTY bridge: a websocket server that owns node-pty processes.
+ * Dev-harness host bridge: one server, two transports. The websocket side
+ * owns node-pty processes; the HTTP side serves /state, persisting workspace
+ * state to the shared ~/.chorus profile tree (same store the Electron host
+ * uses — CHORUS_HOME overrides the root).
  *
  * Runs in Node (never the browser). One websocket connection may drive many
  * sessions, each keyed by `sessionId`. Closing the socket kills every child
@@ -8,6 +11,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import http from 'node:http';
 import process from 'node:process';
 import { WebSocketServer, WebSocket } from 'ws';
 import pty, { type IPty } from 'node-pty';
@@ -16,7 +20,9 @@ import {
   shellLaunchArgs,
   withClaudeHooks,
 } from '@app/core';
+import { FileTreeStore, resolveChorusHome } from '@app/store';
 import type { ClientMsg, ServerMsg } from '../src/protocol.js';
+import { handleStateRequest } from './state-http.js';
 
 const PORT = Number(process.env.PTY_WS_PORT ?? 3001);
 
@@ -67,7 +73,18 @@ function send(ws: WebSocket, msg: ServerMsg): void {
   }
 }
 
-const wss = new WebSocketServer({ port: PORT });
+const store = new FileTreeStore(resolveChorusHome(process.env));
+
+const server = http.createServer((req, res) => {
+  void handleStateRequest(store, req, res).then((handled) => {
+    if (!handled) {
+      res.statusCode = 404;
+      res.end();
+    }
+  });
+});
+
+const wss = new WebSocketServer({ server });
 
 wss.on('connection', (ws) => {
   // Sessions owned by THIS connection.
@@ -143,11 +160,16 @@ wss.on('connection', (ws) => {
   ws.on('error', killAll);
 });
 
-// eslint-disable-next-line no-console
-console.log(`[pty-ws] listening on ws://localhost:${PORT}`);
+server.listen(PORT, () => {
+  // eslint-disable-next-line no-console
+  console.log(
+    `[pty-ws] listening on ws://localhost:${PORT} (state: http://localhost:${PORT}/state)`,
+  );
+});
 
 const shutdown = () => {
   wss.close();
+  server.close();
   process.exit(0);
 };
 process.on('SIGINT', shutdown);

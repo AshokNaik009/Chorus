@@ -167,7 +167,8 @@ export function removeSessionConfig(
   };
 }
 
-function isSessionConfig(v: unknown): v is SessionConfig {
+/** Guard for one persisted SessionConfig (also used per-file by profile.ts). */
+export function isSessionConfig(v: unknown): v is SessionConfig {
   if (!v || typeof v !== 'object') return false;
   const c = v as Record<string, unknown>;
   return (
@@ -191,7 +192,8 @@ function isSwarmMember(v: unknown): v is SwarmMember {
   );
 }
 
-function isSwarmDef(v: unknown): v is SwarmDef {
+/** Guard for one persisted SwarmDef (also used per-file by profile.ts). */
+export function isSwarmDef(v: unknown): v is SwarmDef {
   if (!v || typeof v !== 'object') return false;
   const s = v as Record<string, unknown>;
   return (
@@ -241,7 +243,7 @@ function parseVoiceSettings(raw: unknown): VoiceSettings | undefined {
 }
 
 /** Best-effort parse of app settings. A bad blob is dropped, never fatal. */
-function parseAppSettings(raw: unknown): AppSettings | undefined {
+export function parseAppSettings(raw: unknown): AppSettings | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const s = raw as Record<string, unknown>;
   const voice = parseVoiceSettings(s.voice);

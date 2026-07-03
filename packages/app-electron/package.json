@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@app/core": "*",
+    "@app/store": "*",
     "@app/ui": "*",
     "@app/voice": "*",
     "node-pty": "^1.0.0",

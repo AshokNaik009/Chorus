@@ -10,5 +10,6 @@ export default defineConfig({
   },
   define: {
     __PTY_WS_URL__: JSON.stringify(`ws://localhost:${WS_PORT}`),
+    __STATE_HTTP_URL__: JSON.stringify(`http://localhost:${WS_PORT}`),
   },
 });

@@ -131,6 +131,41 @@ the worktree *and* deletes the branch). On a merge conflict the merge is aborted
 and the base branch left intact. Worktrees are cleaned up on swarm end,
 workspace close, or the next fan-out, so they don't accumulate.
 
+## Persistence — the `~/.chorus/` profile
+
+Both hosts persist to one shared profile folder, Claude-Code-style: one JSON
+file per entity, human-readable, `cat`-able, diff-able.
+
+```
+~/.chorus/
+  state.json                    # storeVersion, active workspace, workspace order
+  settings.json                 # app settings (voice …) — only when set
+  workspaces/<ws-id>/
+    workspace.json              # name, cwd, mode, view, layout, session order
+    sessions/<session-id>.json  # one SessionConfig (incl. claude session id)
+    swarms/<swarm-id>.json      # one swarm definition (incl. worktree identity)
+```
+
+- **Shared across hosts** — the Electron main process and the web harness's
+  dev server write the same tree, so a workspace created in the browser
+  harness shows up in the desktop app. Set `CHORUS_HOME` to relocate the root
+  (handy for throwaway test profiles: `CHORUS_HOME=/tmp/p npm run dev:web`).
+- **Diffed, atomic writes** — each save rewrites only the files whose content
+  changed (tmp file + rename), so a rename touches one file, not the world.
+- **Tolerant loading** — every file is validated individually; a corrupt
+  session file loses that session only, never the profile. A profile written
+  by a *newer* Chorus (unknown `storeVersion`) is left strictly untouched.
+- **Unmanaged files are safe** — the store only ever reads/writes/deletes the
+  paths it manages; your own notes dropped into the tree survive.
+- **One-time migration** — the legacy stores (web: the localStorage blob,
+  desktop: `userData/workspace-state.v2.json`) are imported on first launch
+  and parked with a `.migrated` suffix, so the data stays recoverable.
+
+The format itself is pure logic in `packages/core/src/profile.ts`
+(plan/diff/assemble, unit-tested); the Node fs shell is `@app/store`, used by
+both hosts. Two hosts may run at once — writes are per-file atomic and the
+last writer wins per file.
+
 ## Requirements
 
 - Node >= 20 (developed on Node 22)

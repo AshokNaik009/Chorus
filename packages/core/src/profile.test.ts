@@ -40,12 +40,14 @@ function workspace(id: string, sessions: SessionConfig[]): Workspace {
   };
 }
 
-/** Two workspaces: ws-b (sessions, swarm, mode/view) ordered before ws-a. */
+/** Two workspaces: ws-b (sessions, swarm, every optional field) before ws-a. */
 function sampleState(): WorkspaceState {
   const b: Workspace = {
     ...workspace('ws-b', [session('s-b1'), session('s-b2')]),
     mode: 'swarm',
     view: 'tabs',
+    pinned: true,
+    sourceSessionId: 'conv-b',
     swarms: [swarm('swarm-1', 'ws-b')],
   };
   const a = workspace('ws-a', [session('s-a1')]);

@@ -19,3 +19,4 @@ export * from './bundle.js';
 export * from './voice.js';
 export * from './swarm.js';
 export * from './context-health.js';
+export * from './session-index.js';

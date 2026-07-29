@@ -1,6 +1,12 @@
 import { useState } from 'react';
-import type { SessionStatus, Workspace, WorkspaceState } from '@app/core';
+import {
+  orderWorkspaces,
+  type SessionStatus,
+  type Workspace,
+  type WorkspaceState,
+} from '@app/core';
 import { StatusBadge } from './StatusBadge.js';
+import { BrandLockup } from './Brand.js';
 
 export interface SidebarProps {
   state: WorkspaceState;
@@ -11,12 +17,19 @@ export interface SidebarProps {
   onToggleCollapse: (id: string) => void;
   onNewWorkspace: () => void;
   onRenameWorkspace: (id: string, name: string) => void;
+  /** Pin/unpin: pinned workspaces sort to the top and confirm before closing. */
+  onTogglePinned: (id: string) => void;
   onCloseWorkspace: (id: string) => void;
   onFocusSession: (id: string) => void;
   onRenameSession: (id: string, title: string) => void;
   onCloseSession: (id: string) => void;
   /** Collapse the whole sidebar to a slim rail (handled by the parent). */
   onCollapse?: () => void;
+  /**
+   * Bottom panel (SESSIONS), composed by the parent so the sidebar stays
+   * ignorant of `~/.claude`. Absent on hosts that can't read the session store.
+   */
+  bottomPanel?: React.ReactNode;
 }
 
 function basename(p: string): string {
@@ -96,7 +109,9 @@ function EditableLabel({
         {value}
       </span>
       <button
+        className="sb-act"
         onClick={startEditing}
+        aria-label="Rename"
         title="Rename"
         style={{
           background: 'transparent',
@@ -106,7 +121,6 @@ function EditableLabel({
           fontSize: 11,
           lineHeight: 1,
           padding: 0,
-          opacity: 0.5,
         }}
       >
         ✎
@@ -118,10 +132,12 @@ function EditableLabel({
 function CloseButton({ onClick, title }: { onClick: () => void; title: string }) {
   return (
     <button
+      className="sb-act"
       onClick={(e) => {
         e.stopPropagation();
         onClick();
       }}
+      aria-label={title}
       title={title}
       style={{
         background: 'transparent',
@@ -156,19 +172,22 @@ function WorkspaceGroup({
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
       <div
+        className="sb-row"
         onClick={() => props.onSelectWorkspace(ws.id)}
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 4,
-          padding: '6px 8px',
+          gap: 8,
+          padding: '8px 8px 8px 4px',
           cursor: 'pointer',
-          borderRadius: 6,
+          borderRadius: 8,
           background: active
-            ? 'color-mix(in srgb, var(--accent) 14%, transparent)'
-            : 'transparent',
+            ? 'color-mix(in srgb, var(--accent) 12%, transparent)'
+            : undefined,
           border: '1px solid',
-          borderColor: active ? 'var(--accent)' : 'transparent',
+          borderColor: active
+            ? 'color-mix(in srgb, var(--accent) 55%, transparent)'
+            : 'transparent',
         }}
       >
         <button
@@ -176,12 +195,14 @@ function WorkspaceGroup({
             e.stopPropagation();
             props.onToggleCollapse(ws.id);
           }}
+          aria-label={collapsed ? 'Expand workspace' : 'Collapse workspace'}
           style={{
             background: 'transparent',
             border: 'none',
             color: 'var(--fg-muted)',
             cursor: 'pointer',
-            width: 14,
+            width: 16,
+            flexShrink: 0,
             padding: 0,
             fontSize: 10,
           }}
@@ -191,22 +212,51 @@ function WorkspaceGroup({
         <EditableLabel
           value={ws.name}
           onCommit={(n) => props.onRenameWorkspace(ws.id, n)}
-          style={{ fontWeight: 700, fontSize: 12, color: 'var(--fg)' }}
+          style={{ fontWeight: 600, fontSize: 12.5, color: 'var(--fg)' }}
         />
         {anyWaiting && (
           <span
             title="a session needs attention"
             style={{
-              width: 7,
-              height: 7,
+              width: 6,
+              height: 6,
+              flexShrink: 0,
               borderRadius: '50%',
               background: 'var(--status-waiting)',
             }}
           />
         )}
-        <span style={{ color: 'var(--fg-muted)', fontSize: 10 }}>
+        <span className="sb-count" title={`${ws.sessions.length} session(s)`}>
           {ws.sessions.length}
         </span>
+        <button
+          className="sb-act"
+          onClick={(e) => {
+            e.stopPropagation();
+            props.onTogglePinned(ws.id);
+          }}
+          aria-label={ws.pinned ? 'Unpin workspace' : 'Pin workspace'}
+          aria-pressed={!!ws.pinned}
+          title={
+            ws.pinned
+              ? 'Unpin (returns to its place in the list)'
+              : 'Pin to the top of the list'
+          }
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: ws.pinned ? 'var(--accent)' : 'var(--fg-muted)',
+            cursor: 'pointer',
+            fontSize: 11,
+            lineHeight: 1,
+            padding: '0 2px',
+            // A pinned workspace keeps its marker visible; an unpinned one only
+            // shows the affordance on hover, like the other row actions.
+            opacity: ws.pinned ? 1 : undefined,
+          }}
+        >
+          {ws.pinned ? '📌' : '📍'}
+        </button>
         <CloseButton
           onClick={() => props.onCloseWorkspace(ws.id)}
           title="Close workspace"
@@ -219,11 +269,19 @@ function WorkspaceGroup({
             display: 'flex',
             flexDirection: 'column',
             gap: 2,
-            paddingLeft: 18,
+            margin: '2px 0 2px 11px',
+            paddingLeft: 10,
+            borderLeft: '1px solid var(--border)',
           }}
         >
           {ws.sessions.length === 0 ? (
-            <div style={{ color: 'var(--fg-muted)', fontSize: 11, padding: '4px 8px' }}>
+            <div
+              style={{
+                color: 'var(--fg-muted)',
+                fontSize: 11,
+                padding: '6px 8px',
+              }}
+            >
               no sessions started
             </div>
           ) : (
@@ -233,22 +291,25 @@ function WorkspaceGroup({
               return (
                 <div
                   key={s.sessionId}
+                  className="sb-row"
                   onClick={() => props.onFocusSession(s.sessionId)}
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: 2,
-                    padding: '5px 8px',
+                    gap: 3,
+                    padding: '6px 8px',
                     cursor: 'pointer',
-                    borderRadius: 6,
+                    borderRadius: 8,
                     border: '1px solid',
-                    borderColor: focused ? 'var(--accent)' : 'transparent',
+                    borderColor: focused
+                      ? 'color-mix(in srgb, var(--accent) 55%, transparent)'
+                      : 'transparent',
                     background:
                       status === 'waiting'
                         ? 'color-mix(in srgb, var(--status-waiting) 12%, transparent)'
                         : focused
                           ? 'color-mix(in srgb, var(--accent) 10%, transparent)'
-                          : 'transparent',
+                          : undefined,
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -305,7 +366,7 @@ export function Sidebar(props: SidebarProps) {
   return (
     <div
       style={{
-        width: 250,
+        width: 272,
         flexShrink: 0,
         height: '100%',
         background: 'var(--bg-elevated)',
@@ -314,68 +375,69 @@ export function Sidebar(props: SidebarProps) {
         flexDirection: 'column',
       }}
     >
+      {/* Brand band — same height as the main header so the two read as one bar. */}
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          gap: 6,
-          padding: '11px 12px',
+          gap: 8,
+          height: 45,
+          flexShrink: 0,
+          padding: '0 12px',
           borderBottom: '1px solid var(--border)',
         }}
       >
-        <span className="eyebrow">
-          Workspaces · {props.state.workspaces.length}
-        </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <BrandLockup />
+        {props.onCollapse && (
           <button
-            onClick={props.onNewWorkspace}
-            title="New workspace"
-            style={{
-              background: 'var(--bg)',
-              color: 'var(--fg)',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              padding: '2px 8px',
-              cursor: 'pointer',
-              fontSize: 12,
-              fontFamily: 'inherit',
-            }}
+            className="sb-icon-btn"
+            onClick={props.onCollapse}
+            title="Collapse sidebar"
+            aria-label="Collapse sidebar"
           >
-            + new
+            «
           </button>
-          {props.onCollapse && (
-            <button
-              onClick={props.onCollapse}
-              title="Collapse sidebar"
-              aria-label="Collapse sidebar"
-              style={{
-                background: 'transparent',
-                color: 'var(--fg-muted)',
-                border: '1px solid var(--border)',
-                borderRadius: 6,
-                padding: '2px 7px',
-                cursor: 'pointer',
-                fontSize: 12,
-                lineHeight: 1,
-              }}
-            >
-              «
-            </button>
-          )}
-        </div>
+        )}
       </div>
+
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '14px 12px 8px',
+        }}
+      >
+        <span className="eyebrow" style={{ whiteSpace: 'nowrap' }}>
+          Workspaces
+        </span>
+        <span className="sb-count">{props.state.workspaces.length}</span>
+        <button
+          className="sb-new-btn"
+          onClick={props.onNewWorkspace}
+          title="New workspace"
+          style={{ marginLeft: 'auto' }}
+        >
+          + New
+        </button>
+      </div>
+
+      {/* minHeight:0 is what lets this flex child actually give up space to the
+       *  bottom panel — without it the tree refuses to shrink below its content
+       *  and pushes the panel off the sidebar. */}
       <div
         style={{
           flex: 1,
+          minHeight: 0,
           overflowY: 'auto',
-          padding: 6,
+          padding: '0 8px 10px',
           display: 'flex',
           flexDirection: 'column',
-          gap: 4,
+          gap: 2,
         }}
       >
-        {props.state.workspaces.map((ws) => (
+        {orderWorkspaces(props.state.workspaces).map((ws) => (
           <WorkspaceGroup
             key={ws.id}
             ws={ws}
@@ -385,6 +447,8 @@ export function Sidebar(props: SidebarProps) {
           />
         ))}
       </div>
+
+      {props.bottomPanel}
     </div>
   );
 }

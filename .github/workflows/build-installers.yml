@@ -1,0 +1,42 @@
+name: Build installers
+
+# Builds the Chorus desktop installers. The Windows exe MUST be built on a
+# Windows runner: node-pty compiles from source via node-gyp, which cannot
+# cross-compile (the macOS-built binary would leave the terminal dead on
+# Windows).
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --mac dmg
+            artifact: chorus-dmg
+            pattern: packages/app-electron/release/*.dmg
+          - os: windows-latest
+            args: --win nsis --x64
+            artifact: chorus-exe
+            pattern: packages/app-electron/release/*.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx electron-vite build
+        working-directory: packages/app-electron
+      - run: npx electron-builder ${{ matrix.args }} --publish never
+        working-directory: packages/app-electron
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.pattern }}
+          if-no-files-found: error

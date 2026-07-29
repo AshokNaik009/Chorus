@@ -13,6 +13,7 @@ export { LayoutView } from './LayoutView.js';
 export { TabbedView } from './TabbedView.js';
 export type { TabbedViewProps } from './TabbedView.js';
 export { Sidebar } from './Sidebar.js';
+export { BrandMark, BrandLockup } from './Brand.js';
 export { PaneLauncher } from './PaneLauncher.js';
 export { StatusBadge } from './StatusBadge.js';
 export { MemoryControls } from './MemoryControls.js';
@@ -31,6 +32,8 @@ export { HelpButton } from './Tutorial.js';
 export { ErrorBoundary } from './ErrorBoundary.js';
 export { SwarmPanel } from './SwarmPanel.js';
 export type { SwarmPanelProps } from './SwarmPanel.js';
+export { SessionsPanel } from './SessionsPanel.js';
+export type { SessionsPanelProps } from './SessionsPanel.js';
 export { darkTheme, xtermTheme } from './theme.js';
 
 // Re-exported so hosts can type their wiring against the same status union.

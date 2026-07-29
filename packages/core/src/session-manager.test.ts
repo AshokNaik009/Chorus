@@ -120,6 +120,66 @@ describe('SessionManager', () => {
   });
 });
 
+describe('SessionManager output replay', () => {
+  const backendWith = async () => {
+    const backend = new FakeBackend();
+    const mgr = new SessionManager(backend, { replayLimit: 20 });
+    await mgr.spawn(config('a'), dims);
+    return { backend, mgr };
+  };
+
+  it('replays what a session printed, so a remounted pane is not blank', async () => {
+    const { backend, mgr } = await backendWith();
+    backend.emitData('a', 'one ');
+    backend.emitData('a', 'two');
+    expect(mgr.replayText('a')).toBe('one two');
+  });
+
+  it('keeps output that arrived with no subscriber attached', async () => {
+    const { backend, mgr } = await backendWith();
+    const sub = mgr.onData('a', () => {});
+    backend.emitData('a', 'seen');
+    sub.dispose(); // pane unmounted — the workspace was left
+    backend.emitData('a', ' unseen');
+    expect(mgr.replayText('a')).toBe('seen unseen');
+  });
+
+  it('excludes the OSC status bytes the scanner strips', async () => {
+    const { backend, mgr } = await backendWith();
+    backend.emitData('a', `out${formatStatusOsc('waiting')}put`);
+    expect(mgr.replayText('a')).toBe('output');
+  });
+
+  it('drops whole chunks from the front once over the limit', async () => {
+    const { backend, mgr } = await backendWith();
+    backend.emitData('a', 'aaaaaaaaaa'); // 10
+    backend.emitData('a', 'bbbbbbbbbb'); // 20 — at the limit
+    backend.emitData('a', 'cccccccccc'); // 30 — over, oldest chunk goes
+    expect(mgr.replayText('a')).toBe('bbbbbbbbbbcccccccccc');
+  });
+
+  it('keeps a single oversized chunk rather than truncating mid-escape', async () => {
+    const { backend, mgr } = await backendWith();
+    const big = 'x'.repeat(50);
+    backend.emitData('a', big);
+    expect(mgr.replayText('a')).toBe(big);
+  });
+
+  it('a screen clear resets the replay to what follows it', async () => {
+    const { backend, mgr } = await backendWith();
+    backend.emitData('a', 'stale output');
+    backend.emitData('a', '\x1b[2Jfresh');
+    expect(mgr.replayText('a')).toBe('\x1b[2Jfresh');
+  });
+
+  it('is dropped with the session', async () => {
+    const { backend, mgr } = await backendWith();
+    backend.emitData('a', 'gone');
+    mgr.remove('a');
+    expect(mgr.replayText('a')).toBe('');
+  });
+});
+
 describe('SessionManager fallback quiet timer', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());

@@ -40,6 +40,11 @@ export interface SessionManagerOptions {
    * the session as idle. Disabled once any hook is seen. Default 1500.
    */
   fallbackIdleMs?: number;
+  /**
+   * How much of each session's recent output to keep for replay, in characters.
+   * Default 256k — a few screens of a TUI plus scrollback.
+   */
+  replayLimit?: number;
 }
 
 interface Internal {
@@ -48,6 +53,19 @@ interface Internal {
   subs: Disposable[];
   firstOutputSeen: boolean;
   quietTimer: number | null;
+  /** Recent output chunks, replayed to a terminal that (re)attaches. */
+  replay: string[];
+  /** Total length of `replay`, tracked so trimming needs no re-summing. */
+  replayLen: number;
+}
+
+/**
+ * Where in `chunk` the last full-screen erase starts, or -1. Everything before
+ * a `2J`/`3J` has been wiped off the screen, so the replay can start there and
+ * stay the size of what is actually visible.
+ */
+function lastScreenClear(chunk: string): number {
+  return Math.max(chunk.lastIndexOf('\x1b[2J'), chunk.lastIndexOf('\x1b[3J'));
 }
 
 /**
@@ -63,6 +81,7 @@ export class SessionManager {
   private readonly sessions = new Map<string, Session>();
   private readonly internal = new Map<string, Internal>();
   private readonly fallbackIdleMs: number;
+  private readonly replayLimit: number;
 
   /** Fires on any change to the session list, config, or status. */
   readonly onChange = new Emitter<Session[]>();
@@ -74,6 +93,7 @@ export class SessionManager {
     options: SessionManagerOptions = {},
   ) {
     this.fallbackIdleMs = options.fallbackIdleMs ?? 1500;
+    this.replayLimit = options.replayLimit ?? 256_000;
   }
 
   list(): Session[] {
@@ -101,12 +121,17 @@ export class SessionManager {
     if (this.sessions.has(id)) return;
 
     this.sessions.set(id, { config: { ...config }, status: 'spawning' });
+    const prior = this.internal.get(id);
     const state: Internal = {
       scanner: new OscStatusScanner(),
-      output: this.internal.get(id)?.output ?? new Emitter<string>(),
+      output: prior?.output ?? new Emitter<string>(),
       subs: [],
       firstOutputSeen: false,
       quietTimer: null,
+      // A pane can subscribe before spawn; anything it already buffered belongs
+      // to this session and is carried over with the emitter.
+      replay: prior?.replay ?? [],
+      replayLen: prior?.replayLen ?? 0,
     };
     this.internal.set(id, state);
 
@@ -134,6 +159,21 @@ export class SessionManager {
   /** Subscribe to a session's cleaned PTY output (OSC status bytes removed). */
   onData(sessionId: string, cb: (data: string) => void): Disposable {
     return this.outputEmitter(sessionId).on(cb);
+  }
+
+  /**
+   * Everything the session has printed recently, up to `replayLimit`.
+   *
+   * This is what lets a pane survive being unmounted. Leaving a workspace
+   * disposes its xterm while the PTY keeps running, so a terminal that comes
+   * back has an empty screen and no reason to repaint — a TUI redraws when
+   * something asks it to, and nothing does. Writing this into the fresh
+   * terminal restores what was there, including whatever printed while the
+   * workspace was in the background.
+   */
+  replayText(sessionId: string): string {
+    const state = this.internal.get(sessionId);
+    return state ? state.replay.join('') : '';
   }
 
   write(sessionId: string, data: string): void {
@@ -206,11 +246,37 @@ export class SessionManager {
     }
     for (const status of statuses) this.applyHookStatus(sessionId, status);
 
-    if (output) state.output.emit(output);
+    if (output) {
+      this.appendReplay(state, output);
+      state.output.emit(output);
+    }
 
     // While `running`, continued output keeps it alive (resets the quiet timer).
     if (state.quietTimer !== null) {
       this.armQuietTimer(sessionId);
+    }
+  }
+
+  /**
+   * Record output for a later replay, oldest-first and bounded. A chunk that
+   * clears the screen resets the buffer to what follows it — the program has
+   * just declared everything before it invisible.
+   */
+  private appendReplay(state: Internal, chunk: string): void {
+    const clearAt = lastScreenClear(chunk);
+    if (clearAt >= 0) {
+      const tail = chunk.slice(clearAt);
+      state.replay = [tail];
+      state.replayLen = tail.length;
+      return;
+    }
+    state.replay.push(chunk);
+    state.replayLen += chunk.length;
+    // Drop whole chunks off the front, never a partial one: cutting mid-escape
+    // would feed the terminal a truncated sequence and garble the replay. The
+    // last chunk always stays, even if it alone exceeds the limit.
+    while (state.replayLen > this.replayLimit && state.replay.length > 1) {
+      state.replayLen -= state.replay.shift()!.length;
     }
   }
 
@@ -225,6 +291,8 @@ export class SessionManager {
         subs: [],
         firstOutputSeen: false,
         quietTimer: null,
+        replay: [],
+        replayLen: 0,
       };
       this.internal.set(sessionId, state);
     }

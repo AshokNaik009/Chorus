@@ -101,6 +101,82 @@ body {
   color: var(--faint);
 }
 
+/* ---- sidebar chrome ----
+ * Row actions (rename / close) stay hidden until the row is hovered or holds
+ * focus, so the tree reads as names first and controls second. Rows only carry
+ * an inline background when active/waiting, which lets :hover win otherwise. */
+.sb-row {
+  transition: background 120ms ease;
+}
+.sb-row:hover {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.sb-act {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.sb-row:hover .sb-act,
+.sb-row:focus-within .sb-act,
+.sb-act:focus-visible {
+  opacity: 0.75;
+}
+.sb-act:hover {
+  opacity: 1 !important;
+  color: var(--text);
+}
+
+.sb-count {
+  flex-shrink: 0;
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface0);
+  color: var(--subtext);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.sb-new-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-inline);
+  padding: 4px 10px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease;
+}
+.sb-new-btn:hover {
+  border-color: var(--mauve);
+  color: var(--mauve);
+}
+
+.sb-icon-btn {
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-inline);
+  padding: 3px 7px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease;
+}
+.sb-icon-btn:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
 /* Quiet, on-brand scrollbars. */
 * {
   scrollbar-width: thin;

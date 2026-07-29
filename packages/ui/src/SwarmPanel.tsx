@@ -104,9 +104,11 @@ export function SwarmPanel(props: SwarmPanelProps) {
   const [foWorkers, setFoWorkers] = useState<
     { role: string; task: string; dir: string }[]
   >([
+    // Only frontend + backend are prefilled: each agent verifies its own work,
+    // so a dedicated tests agent is not part of the default shape. More agents
+    // can still be added by hand with "+ agent".
     { role: 'frontend', task: '', dir: '' },
     { role: 'backend', task: '', dir: '' },
-    { role: 'tests', task: '', dir: '' },
   ]);
   const [foAutoStart, setFoAutoStart] = useState(true);
   const validWorkers = foWorkers.filter((w) => w.role.trim());

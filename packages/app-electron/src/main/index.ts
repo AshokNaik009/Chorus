@@ -31,6 +31,7 @@ import {
   removeWorktree,
   reviewWorktree,
 } from './git-worktree.js';
+import { listSessions, liveSessions } from './session-catalog.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -300,6 +301,12 @@ ipcMain.handle(
     }
   },
 );
+
+// The SESSIONS panel's two reads: the transcript store, and which of those
+// conversations is live. Both already swallow their own failures; the handlers
+// keep the house rule of never throwing across IPC.
+ipcMain.handle(IPC.listSessions, (_e, limit?: number) => listSessions(limit));
+ipcMain.handle(IPC.liveSessions, () => liveSessions());
 
 app.whenReady().then(() => {
   createWindow();

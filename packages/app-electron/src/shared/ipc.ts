@@ -8,7 +8,9 @@ import type {
   ContextHealth,
   ConversationRef,
   ImportConversationsResult,
+  LiveSession,
   MergeResult,
+  SessionMeta,
   SpawnOptions,
   WorkspaceState,
   WorktreeReview,
@@ -36,6 +38,8 @@ export const IPC = {
   exportConversations: 'pane:export-conversations',
   importConversations: 'pane:import-conversations',
   readContextHealth: 'pane:read-context-health',
+  listSessions: 'pane:list-sessions',
+  liveSessions: 'pane:live-sessions',
 } as const;
 
 /** Payload for `pane:pty-data` / `pane:pty-exit` (keyed by session). */
@@ -125,4 +129,11 @@ export interface PaneApi {
     claudeSessionId: string,
     cwd: string,
   ): Promise<ContextHealth | null>;
+  /**
+   * Every readable Claude Code conversation on this machine, newest first —
+   * the SESSIONS panel's source. Reads only each transcript's head + tail.
+   */
+  listSessions(limit?: number): Promise<SessionMeta[]>;
+  /** Which of those conversations has a live `claude` process. `[]` if unknown. */
+  liveSessions(): Promise<LiveSession[]>;
 }

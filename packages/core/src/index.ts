@@ -20,3 +20,4 @@ export * from './voice.js';
 export * from './swarm.js';
 export * from './context-health.js';
 export * from './session-index.js';
+export * from './session-trace.js';

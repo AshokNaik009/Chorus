@@ -34,6 +34,8 @@ export { SwarmPanel } from './SwarmPanel.js';
 export type { SwarmPanelProps } from './SwarmPanel.js';
 export { SessionsPanel } from './SessionsPanel.js';
 export type { SessionsPanelProps } from './SessionsPanel.js';
+export { SessionTracePanel } from './SessionTracePanel.js';
+export type { SessionTracePanelProps } from './SessionTracePanel.js';
 export { darkTheme, xtermTheme } from './theme.js';
 
 // Re-exported so hosts can type their wiring against the same status union.

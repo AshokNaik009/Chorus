@@ -23,6 +23,7 @@ import {
 import { FileTreeStore, resolveChorusHome } from '@app/store';
 import type { ClientMsg, ServerMsg } from '../src/protocol.js';
 import { handleStateRequest } from './state-http.js';
+import { handleTraceRequest } from './trace-http.js';
 
 const PORT = Number(process.env.PTY_WS_PORT ?? 3001);
 
@@ -76,12 +77,12 @@ function send(ws: WebSocket, msg: ServerMsg): void {
 const store = new FileTreeStore(resolveChorusHome(process.env));
 
 const server = http.createServer((req, res) => {
-  void handleStateRequest(store, req, res).then((handled) => {
-    if (!handled) {
-      res.statusCode = 404;
-      res.end();
-    }
-  });
+  void (async () => {
+    if (await handleStateRequest(store, req, res)) return;
+    if (await handleTraceRequest(req, res)) return;
+    res.statusCode = 404;
+    res.end();
+  })();
 });
 
 const wss = new WebSocketServer({ server });
@@ -163,7 +164,8 @@ wss.on('connection', (ws) => {
 server.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(
-    `[pty-ws] listening on ws://localhost:${PORT} (state: http://localhost:${PORT}/state)`,
+    `[pty-ws] listening on ws://localhost:${PORT} ` +
+      `(state: http://localhost:${PORT}/state, trace: http://localhost:${PORT}/trace)`,
   );
 });
 

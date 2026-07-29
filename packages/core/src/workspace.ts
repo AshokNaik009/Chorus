@@ -5,6 +5,7 @@ import type {
   SessionsPanelSettings,
   SwarmDef,
   SwarmMember,
+  TracePanelSettings,
   VoiceSettings,
   Workspace,
   WorkspaceState,
@@ -288,16 +289,24 @@ function parseSessionsPanelSettings(
   return { open: p.open, ...(expanded ? { expanded } : {}) };
 }
 
+function parseTracePanelSettings(raw: unknown): TracePanelSettings | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const p = raw as Record<string, unknown>;
+  return typeof p.open === 'boolean' ? { open: p.open } : undefined;
+}
+
 /** Best-effort parse of app settings. A bad blob is dropped, never fatal. */
 export function parseAppSettings(raw: unknown): AppSettings | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const s = raw as Record<string, unknown>;
   const voice = parseVoiceSettings(s.voice);
   const sessionsPanel = parseSessionsPanelSettings(s.sessionsPanel);
-  if (!voice && !sessionsPanel) return undefined;
+  const tracePanel = parseTracePanelSettings(s.tracePanel);
+  if (!voice && !sessionsPanel && !tracePanel) return undefined;
   return {
     ...(voice ? { voice } : {}),
     ...(sessionsPanel ? { sessionsPanel } : {}),
+    ...(tracePanel ? { tracePanel } : {}),
   };
 }
 

@@ -57,6 +57,7 @@ const api: PaneApi = {
     ipcRenderer.invoke(IPC.readContextHealth, claudeSessionId, cwd),
   listSessions: (limit) => ipcRenderer.invoke(IPC.listSessions, limit),
   liveSessions: () => ipcRenderer.invoke(IPC.liveSessions),
+  readTrace: (req) => ipcRenderer.invoke(IPC.readTrace, req),
 };
 
 contextBridge.exposeInMainWorld('paneApi', api);

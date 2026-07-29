@@ -18,6 +18,7 @@ import {
   type ConversationRef,
   type ImportConversationsResult,
   type SpawnOptions,
+  type TraceRequest,
   type WorkspaceState,
 } from '@app/core';
 import { FileTreeStore, resolveChorusHome } from '@app/store';
@@ -32,6 +33,7 @@ import {
   reviewWorktree,
 } from './git-worktree.js';
 import { listSessions, liveSessions } from './session-catalog.js';
+import { readTrace } from './session-trace-reader.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -307,6 +309,12 @@ ipcMain.handle(
 // keep the house rule of never throwing across IPC.
 ipcMain.handle(IPC.listSessions, (_e, limit?: number) => listSessions(limit));
 ipcMain.handle(IPC.liveSessions, () => liveSessions());
+
+// The SESSION TRACE panel's byte reader. Main resolves the project slug from the
+// pane's cwd exactly as the other transcript handlers do; the renderer parses.
+ipcMain.handle(IPC.readTrace, (_e, req: TraceRequest) =>
+  readTrace((cwd) => projectsDir(resolveBase(cwd)), req),
+);
 
 app.whenReady().then(() => {
   createWindow();

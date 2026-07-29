@@ -148,11 +148,19 @@ export interface SessionsPanelSettings {
   expanded?: string[];
 }
 
+/** SESSION TRACE panel chrome. */
+export interface TracePanelSettings {
+  /** Whether the panel is expanded (collapsed shows the header only). */
+  open: boolean;
+}
+
 /** App-wide settings persisted alongside the workspaces. */
 export interface AppSettings {
   voice?: VoiceSettings;
   /** SESSIONS panel open/closed + which project groups are unfolded. */
   sessionsPanel?: SessionsPanelSettings;
+  /** SESSION TRACE panel open/closed. Accordion-paired with `sessionsPanel`. */
+  tracePanel?: TracePanelSettings;
 }
 
 /** The full persisted state: many workspaces plus which one is active. */

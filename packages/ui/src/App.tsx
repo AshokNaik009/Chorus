@@ -50,6 +50,7 @@ import {
   type SessionMeta,
   type SessionsPanelSettings,
   type SessionStatus,
+  type SessionTraceSource,
   type SwarmDef,
   type SwarmMember,
   type SwarmWorkspace,
@@ -79,6 +80,7 @@ import {
 import { HelpButton } from './Tutorial.js';
 import { SwarmPanel } from './SwarmPanel.js';
 import { SessionsPanel } from './SessionsPanel.js';
+import { SessionTracePanel } from './SessionTracePanel.js';
 import { DiffReview, type ReviewMember } from './DiffReview.js';
 import { ErrorBoundary } from './ErrorBoundary.js';
 import type { TerminalPaneHandle } from './TerminalPane.js';
@@ -112,6 +114,12 @@ export interface AppProps {
    * without it the panel isn't rendered and the sidebar is unchanged.
    */
   sessionCatalog?: SessionCatalog;
+  /**
+   * Reader for one transcript's body, powering the sidebar's SESSION TRACE
+   * panel. Like `sessionCatalog` it is a host capability: absent where the
+   * transcript store is unreachable, and the panel then isn't rendered.
+   */
+  traceSource?: SessionTraceSource;
 }
 
 /** Simplified manual layout: just pick how many terminals (1–6). */
@@ -158,6 +166,7 @@ export function App({
   transcribers,
   swarmWorkspace,
   sessionCatalog,
+  traceSource,
 }: AppProps) {
   const [state, setState] = useState<WorkspaceState | null>(null);
   const [live, setLive] = useState<Session[]>([]);
@@ -916,9 +925,61 @@ export function App({
     [],
   );
 
+  // ---- SESSION TRACE panel (what the focused pane is doing right now) ----
+
+  const traceOpen = state?.settings?.tracePanel?.open ?? false;
+
+  /**
+   * The two bottom panels are an accordion: opening one closes the other. They
+   * share whatever height the workspace tree gives up, and in a ~270px column
+   * splitting that between two scrollers makes both unreadable. Each panel's
+   * state is still persisted separately, so a restart restores what was open.
+   */
+  const setPanels = useCallback((trace: boolean, sessions: boolean) => {
+    setState((prev) => {
+      if (!prev) return prev;
+      const cur = prev.settings?.sessionsPanel ?? { open: false };
+      return {
+        ...prev,
+        settings: {
+          ...prev.settings,
+          tracePanel: { open: trace },
+          sessionsPanel: { ...cur, open: sessions },
+        },
+      };
+    });
+  }, []);
+
+  const toggleTracePanel = useCallback(
+    () => setPanels(!traceOpen, false),
+    [setPanels, traceOpen],
+  );
+
+  /**
+   * Which pane the trace follows: the focused one, falling back to the active
+   * workspace's first pane so a workspace that hasn't been clicked into still
+   * traces something (the same fallback the broadcast/paste paths use).
+   *
+   * Shell panes are excluded deliberately — they have no conversation, and the
+   * "newest transcript in this cwd" guess would hand them a neighbouring
+   * session's trace, exactly the mix-up `SessionConfig.kind` exists to prevent.
+   */
+  const tracedPane = useMemo(() => {
+    if (!state || !active) return undefined;
+    const id = focusedId ?? collectSessionIds(active.layout)[0];
+    if (!id) return undefined;
+    const cfg = findSession(state, id)?.cfg;
+    if (!cfg || cfg.kind === 'shell') return undefined;
+    return {
+      ...(cfg.claudeSessionId ? { claudeSessionId: cfg.claudeSessionId } : {}),
+      cwd: cfg.cwd,
+      label: cfg.title,
+    };
+  }, [state, active, focusedId]);
+
   const toggleSessionsPanel = useCallback(
-    () => patchSessionsPanel({ open: !sessionsOpen }),
-    [patchSessionsPanel, sessionsOpen],
+    () => setPanels(false, !sessionsOpen),
+    [setPanels, sessionsOpen],
   );
 
   const toggleSessionsProject = useCallback(
@@ -930,6 +991,7 @@ export function App({
     },
     [expandedProjects, patchSessionsPanel],
   );
+
 
   /**
    * Re-enter a past conversation: a new workspace, one pane, launched with
@@ -1508,18 +1570,30 @@ export function App({
           onCloseSession={closeSession}
           onCollapse={() => setSidebarOpen(false)}
           bottomPanel={
-            sessionCatalog && (
-              <SessionsPanel
-                catalog={sessionCatalog}
-                open={sessionsOpen}
-                onToggleOpen={toggleSessionsPanel}
-                expanded={expandedProjects}
-                onToggleProject={toggleSessionsProject}
-                onOpenSession={(meta, fork) => void openClaudeSession(meta, fork)}
-                openSessionIds={openClaudeIds}
-                currentCwd={active.defaultCwd}
-              />
-            )
+            <>
+              {traceSource && (
+                <SessionTracePanel
+                  source={traceSource}
+                  open={traceOpen}
+                  onToggleOpen={toggleTracePanel}
+                  claudeSessionId={tracedPane?.claudeSessionId}
+                  cwd={tracedPane?.cwd}
+                  paneLabel={tracedPane?.label}
+                />
+              )}
+              {sessionCatalog && (
+                <SessionsPanel
+                  catalog={sessionCatalog}
+                  open={sessionsOpen}
+                  onToggleOpen={toggleSessionsPanel}
+                  expanded={expandedProjects}
+                  onToggleProject={toggleSessionsProject}
+                  onOpenSession={(meta, fork) => void openClaudeSession(meta, fork)}
+                  openSessionIds={openClaudeIds}
+                  currentCwd={active.defaultCwd}
+                />
+              )}
+            </>
           }
         />
       ) : (

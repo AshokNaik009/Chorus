@@ -11,6 +11,8 @@ import type {
   LiveSession,
   MergeResult,
   SessionMeta,
+  TraceRequest,
+  TraceSlice,
   SpawnOptions,
   WorkspaceState,
   WorktreeReview,
@@ -40,6 +42,7 @@ export const IPC = {
   readContextHealth: 'pane:read-context-health',
   listSessions: 'pane:list-sessions',
   liveSessions: 'pane:live-sessions',
+  readTrace: 'pane:read-trace',
 } as const;
 
 /** Payload for `pane:pty-data` / `pane:pty-exit` (keyed by session). */
@@ -136,4 +139,10 @@ export interface PaneApi {
   listSessions(limit?: number): Promise<SessionMeta[]>;
   /** Which of those conversations has a live `claude` process. `[]` if unknown. */
   liveSessions(): Promise<LiveSession[]>;
+  /**
+   * A window of one transcript's raw bytes — the SESSION TRACE panel's source.
+   * Omitting `from` reads the tail; passing the previous `end` reads only what
+   * the session has appended since. Null when there is no transcript yet.
+   */
+  readTrace(req: TraceRequest): Promise<TraceSlice | null>;
 }

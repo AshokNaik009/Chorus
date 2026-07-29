@@ -9,6 +9,7 @@ import { ElectronPersistence } from './electron-persistence.js';
 import { ElectronSwarmWorkspace } from './electron-swarm-workspace.js';
 import { ElectronSessionArchive } from './electron-session-archive.js';
 import { ElectronSessionCatalog } from './electron-session-catalog.js';
+import { ElectronTraceSource } from './electron-trace-source.js';
 
 // Host wiring: the preload exposes `paneApi` (the only IPC surface). We build a
 // PtyBackend + Persistence over it and inject a SessionManager into the same
@@ -24,6 +25,7 @@ const transcribers = [new WhisperWasmTranscriber()];
 const swarmWorkspace = new ElectronSwarmWorkspace(api);
 const sessionArchive = new ElectronSessionArchive(api);
 const sessionCatalog = new ElectronSessionCatalog(api);
+const traceSource = new ElectronTraceSource(api);
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -35,6 +37,7 @@ createRoot(document.getElementById('root')!).render(
       swarmWorkspace={swarmWorkspace}
       sessionArchive={sessionArchive}
       sessionCatalog={sessionCatalog}
+      traceSource={traceSource}
     />
   </StrictMode>,
 );

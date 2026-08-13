@@ -8,6 +8,7 @@ import type {
   ContextHealth,
   ConversationRef,
   ImportConversationsResult,
+  IslandStatus,
   LiveSession,
   MergeResult,
   SessionMeta,
@@ -43,6 +44,9 @@ export const IPC = {
   listSessions: 'pane:list-sessions',
   liveSessions: 'pane:live-sessions',
   readTrace: 'pane:read-trace',
+  islandSetEnabled: 'pane:island-set-enabled',
+  islandWriteGate: 'pane:island-write-gate',
+  islandProbe: 'pane:island-probe',
 } as const;
 
 /** Payload for `pane:pty-data` / `pane:pty-exit` (keyed by session). */
@@ -145,4 +149,13 @@ export interface PaneApi {
    * the session has appended since. Null when there is no transcript yet.
    */
   readTrace(req: TraceRequest): Promise<TraceSlice | null>;
+  /**
+   * ISLAND mode (CodeIsland, the macOS notch panel). `setEnabled` launches or
+   * quits it and flips its own Claude hooks; `writeGate` rewrites which panes
+   * are streamed; `probe` reports whether it is installed and running. Never
+   * throws — a missing island degrades to normal in-pane prompts.
+   */
+  islandSetEnabled(enabled: boolean, appPath?: string): Promise<IslandStatus>;
+  islandWriteGate(claudeSessionIds: string[]): Promise<void>;
+  islandProbe(appPath?: string): Promise<IslandStatus>;
 }

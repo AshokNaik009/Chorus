@@ -1,3 +1,4 @@
+import { buildIslandHooks } from './island.js';
 import type { HookStatus } from './status.js';
 
 /**
@@ -93,13 +94,23 @@ export class OscStatusScanner {
 export interface ClaudeHookCommand {
   type: 'command';
   command: string;
+  /** Seconds before Claude Code cancels the command. Omitted = CLI default. */
+  timeout?: number;
+}
+
+/** One entry in an event's hook array: an optional matcher plus its commands. */
+export interface ClaudeHookGroup {
+  matcher?: string;
+  hooks: ClaudeHookCommand[];
 }
 
 export interface ClaudeHookSettings {
   hooks: {
-    Notification: Array<{ hooks: ClaudeHookCommand[] }>;
-    Stop: Array<{ hooks: ClaudeHookCommand[] }>;
-  };
+    /** Status OSC (-> waiting), plus the island hook when ISLAND mode is wired. */
+    Notification: ClaudeHookGroup[];
+    /** Status OSC (-> idle), plus the island hook when ISLAND mode is wired. */
+    Stop: ClaudeHookGroup[];
+  } & Record<string, ClaudeHookGroup[]>;
 }
 
 function hookCommand(state: HookStatus): string {
@@ -109,18 +120,40 @@ function hookCommand(state: HookStatus): string {
   return `printf '\\033]777;pane;status;${state}\\007' > /dev/tty 2>/dev/null`;
 }
 
+export interface ClaudeHookOptions {
+  /**
+   * Absolute path of the ISLAND-mode hook script (see `island.ts`). When given,
+   * the island's 12 events are merged in alongside the status hooks. The script
+   * is always installed; its gate file decides whether it does anything, so the
+   * mode can be toggled without respawning any pane.
+   */
+  islandScript?: string;
+}
+
 /**
  * Build the settings object passed to `claude --settings <file>`, installing
  * the Notification (-> waiting) and Stop (-> idle) hooks (PRD §5.4). Pure so the
  * shape is testable; the host writes it to a file.
+ *
+ * Notification and Stop end up with two entries when the island script is
+ * wired: Claude Code runs every matching hook, so the OSC status still fires
+ * immediately regardless of what the island does with the event.
  */
-export function buildClaudeHookSettings(): ClaudeHookSettings {
-  return {
-    hooks: {
-      Notification: [
-        { hooks: [{ type: 'command', command: hookCommand('waiting') }] },
-      ],
-      Stop: [{ hooks: [{ type: 'command', command: hookCommand('idle') }] }],
-    },
+export function buildClaudeHookSettings(
+  opts: ClaudeHookOptions = {},
+): ClaudeHookSettings {
+  const hooks: ClaudeHookSettings['hooks'] = {
+    Notification: [
+      { hooks: [{ type: 'command', command: hookCommand('waiting') }] },
+    ],
+    Stop: [{ hooks: [{ type: 'command', command: hookCommand('idle') }] }],
   };
+  if (opts.islandScript) {
+    for (const [event, entries] of Object.entries(
+      buildIslandHooks(opts.islandScript),
+    )) {
+      hooks[event] = [...(hooks[event] ?? []), ...entries];
+    }
+  }
+  return { hooks };
 }

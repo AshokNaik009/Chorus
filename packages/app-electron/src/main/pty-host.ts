@@ -21,16 +21,30 @@ import {
   type SpawnOptions,
 } from '@app/core';
 import { IPC } from '../shared/ipc.js';
+import { installIslandScript } from './island.js';
 
 /**
  * Write the Claude Code status hooks (Notification/Stop -> OSC) to a temp file
  * once; every claude session is launched with `--settings <file>`. The OSC is
  * namespaced per stream, so one shared file serves all sessions.
+ *
+ * The ISLAND-mode hooks go in at the same time and stay there for the process's
+ * life. They are inert until the gate file exists, so the mode can be toggled
+ * from the sidebar without respawning a single pane — which is the whole reason
+ * the gate is a file rather than a settings flag.
  */
 function installHooksFile(): string | null {
   try {
+    const islandScript = installIslandScript();
     const file = path.join(os.tmpdir(), 'pane-claude-hooks.json');
-    fs.writeFileSync(file, JSON.stringify(buildClaudeHookSettings(), null, 2));
+    fs.writeFileSync(
+      file,
+      JSON.stringify(
+        buildClaudeHookSettings(islandScript ? { islandScript } : {}),
+        null,
+        2,
+      ),
+    );
     return file;
   } catch {
     return null;

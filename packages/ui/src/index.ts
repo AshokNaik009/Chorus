@@ -36,6 +36,8 @@ export { SessionsPanel } from './SessionsPanel.js';
 export type { SessionsPanelProps } from './SessionsPanel.js';
 export { SessionTracePanel } from './SessionTracePanel.js';
 export type { SessionTracePanelProps } from './SessionTracePanel.js';
+export { IslandRow } from './IslandRow.js';
+export type { IslandRowProps } from './IslandRow.js';
 export { darkTheme, xtermTheme } from './theme.js';
 
 // Re-exported so hosts can type their wiring against the same status union.

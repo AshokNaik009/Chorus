@@ -193,6 +193,20 @@ describe('parseWorkspaceState', () => {
     expect(parsed?.settings).toEqual({ sessionsPanel: { open: false } });
   });
 
+  it('keeps ISLAND mode state and drops a malformed one', () => {
+    expect(parseAppSettings({ islandMode: { enabled: true } })?.islandMode).toEqual({
+      enabled: true,
+    });
+    expect(
+      parseAppSettings({ islandMode: { enabled: false, appPath: '/Applications/CodeIsland.app' } })
+        ?.islandMode,
+    ).toEqual({ enabled: false, appPath: '/Applications/CodeIsland.app' });
+
+    // `enabled` is the whole setting; without it there is nothing to restore.
+    expect(parseAppSettings({ islandMode: { appPath: '/x' } })).toBeUndefined();
+    expect(parseAppSettings({ islandMode: 'on' })).toBeUndefined();
+  });
+
   it('repairs a dangling activeWorkspaceId to the first workspace', () => {
     const s = defaultWorkspaceState();
     const broken = { ...s, activeWorkspaceId: 'gone' };

@@ -40,6 +40,7 @@ import {
   type ContextHealth,
   type ImportMode,
   type ImportResult,
+  type IslandControl,
   type LayoutNode,
   type Persistence,
   type Session,
@@ -81,6 +82,7 @@ import { HelpButton } from './Tutorial.js';
 import { SwarmPanel } from './SwarmPanel.js';
 import { SessionsPanel } from './SessionsPanel.js';
 import { SessionTracePanel } from './SessionTracePanel.js';
+import { IslandRow } from './IslandRow.js';
 import { DiffReview, type ReviewMember } from './DiffReview.js';
 import { ErrorBoundary } from './ErrorBoundary.js';
 import type { TerminalPaneHandle } from './TerminalPane.js';
@@ -120,6 +122,14 @@ export interface AppProps {
    * transcript store is unreachable, and the panel then isn't rendered.
    */
   traceSource?: SessionTraceSource;
+  /**
+   * Drives the CodeIsland notch panel (ISLAND mode). A macOS-app capability, so
+   * Electron only; without it the sidebar's ISLAND row renders disabled with a
+   * "macOS app only" note rather than disappearing — a deliberate exception to
+   * the both-hosts symmetry the SESSION TRACE panel established, because the
+   * row explains an absence the user would otherwise go looking for.
+   */
+  islandControl?: IslandControl;
 }
 
 /** Simplified manual layout: just pick how many terminals (1–6). */
@@ -167,6 +177,7 @@ export function App({
   swarmWorkspace,
   sessionCatalog,
   traceSource,
+  islandControl,
 }: AppProps) {
   const [state, setState] = useState<WorkspaceState | null>(null);
   const [live, setLive] = useState<Session[]>([]);
@@ -982,6 +993,96 @@ export function App({
     [setPanels, sessionsOpen],
   );
 
+  // ---- ISLAND mode (CodeIsland, the macOS notch panel) ----
+
+  const islandMode = state?.settings?.islandMode;
+  const islandEnabled = islandMode?.enabled ?? false;
+
+  const setIslandMode = useCallback(
+    (next: { enabled: boolean; appPath?: string }) => {
+      setState((prev) =>
+        prev
+          ? { ...prev, settings: { ...prev.settings, islandMode: next } }
+          : prev,
+      );
+    },
+    [],
+  );
+
+  /**
+   * Which conversations the island may show: the ACTIVE workspace's Claude
+   * panes only.
+   *
+   * Swarm panes are excluded. A fan-out is a dozen agents churning through tool
+   * calls in throwaway worktrees; streaming those to a notch that shows one card
+   * at a time buries the pane you actually care about, and approving a swarm
+   * agent's edit from outside the review/merge flow works against how swarms are
+   * meant to be landed.
+   *
+   * Panes whose `claudeSessionId` hasn't been captured yet are simply absent —
+   * the id arrives within one 15s poll and the gate is rewritten then. Until it
+   * does, that pane prompts in-pane, which is the correct fallback.
+   */
+  const islandSessionIds = useMemo(() => {
+    if (!state || !active) return [] as string[];
+    const swarmPanes = new Set<string>();
+    for (const sw of active.swarms ?? []) {
+      for (const m of sw.members) swarmPanes.add(m.sessionId);
+    }
+    const ids: string[] = [];
+    for (const id of collectSessionIds(active.layout)) {
+      if (swarmPanes.has(id)) continue;
+      const cfg = active.sessions.find((s) => s.sessionId === id);
+      if (!cfg || cfg.kind === 'shell') continue;
+      // A worktree pane that is no longer listed in `swarms` (a swarm the user
+      // reset) still isn't a normal pane — its cwd gives it away.
+      if (cfg.cwd.includes('/.chorus/')) continue;
+      // `persistClaudeId` writes a captured id onto the pane's config, so the
+      // saved config is the single source here and this memo recomputes when
+      // the capture poll lands.
+      if (cfg.claudeSessionId) ids.push(cfg.claudeSessionId);
+    }
+    return ids;
+  }, [state, active]);
+
+  /**
+   * Re-apply the mode once on startup when it was persisted as on.
+   *
+   * The gate effect below only writes the allow-list; everything else the mode
+   * owns — launching CodeIsland, and stripping its own Claude hooks so Chorus
+   * is the sole feed — happens in `setEnabled`. Without this, an app restart
+   * would come back with the gate live but CodeIsland's ungated hooks firing
+   * again alongside ours. `setEnabled(true)` is idempotent, so re-running it is
+   * a reconcile, not a toggle.
+   */
+  // Read by the reconcile below without making it re-run on every pane change.
+  const islandSessionIdsRef = useRef(islandSessionIds);
+  islandSessionIdsRef.current = islandSessionIds;
+
+  const islandReconciled = useRef(false);
+  useEffect(() => {
+    if (!islandControl || !islandEnabled || islandReconciled.current) return;
+    islandReconciled.current = true;
+    // Re-write the gate once the reconcile has settled. The effect below may
+    // well have filled it already, but `setEnabled` runs several shell-outs and
+    // finishes late, so this is what makes the final state independent of which
+    // of the two lands last.
+    void islandControl
+      .setEnabled(true, islandMode?.appPath)
+      .then(() => islandControl.writeGate(islandSessionIdsRef.current));
+  }, [islandControl, islandEnabled, islandMode?.appPath]);
+
+  // Keep the gate in step with whatever the island is allowed to see. Runs on
+  // workspace switch, pane add/remove, and a lazily-captured session id — the
+  // same `live`/`state` churn every other derived view reacts to. Off (or no
+  // host) writes nothing: the gate file is absent and the hooks are already
+  // inert.
+  const gateKey = islandSessionIds.join('\n');
+  useEffect(() => {
+    if (!islandControl || !islandEnabled) return;
+    void islandControl.writeGate(gateKey ? gateKey.split('\n') : []);
+  }, [islandControl, islandEnabled, gateKey]);
+
   const toggleSessionsProject = useCallback(
     (dir: string) => {
       const next = new Set(expandedProjects);
@@ -1593,6 +1694,16 @@ export function App({
                   currentCwd={active.defaultCwd}
                 />
               )}
+              {/* A mode, not a panel: it lives below the accordion and never
+                  folds the panels away. Always rendered — on web it explains
+                  why the notch panel isn't an option here. */}
+              <IslandRow
+                control={islandControl}
+                enabled={islandEnabled}
+                appPath={islandMode?.appPath}
+                onChange={setIslandMode}
+                paneCount={islandSessionIds.length}
+              />
             </>
           }
         />

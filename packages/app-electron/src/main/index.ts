@@ -34,6 +34,12 @@ import {
 } from './git-worktree.js';
 import { listSessions, liveSessions } from './session-catalog.js';
 import { readTrace } from './session-trace-reader.js';
+import {
+  probe as islandProbe,
+  restoreIslandOffState,
+  setEnabled as islandSetEnabled,
+  writeGate as islandWriteGate,
+} from './island.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -315,6 +321,25 @@ ipcMain.handle(IPC.liveSessions, () => liveSessions());
 ipcMain.handle(IPC.readTrace, (_e, req: TraceRequest) =>
   readTrace((cwd) => projectsDir(resolveBase(cwd)), req),
 );
+
+// ISLAND mode. Main writes the gate file and drives CodeIsland's process; the
+// hooks talk to its socket themselves, so nothing here opens a connection.
+ipcMain.handle(IPC.islandSetEnabled, (_e, enabled: boolean, appPath?: string) =>
+  islandSetEnabled(enabled, appPath),
+);
+ipcMain.handle(IPC.islandWriteGate, (_e, ids: string[]) => islandWriteGate(ids));
+ipcMain.handle(IPC.islandProbe, (_e, appPath?: string) => islandProbe(appPath));
+
+// Quitting Chorus is not the same as turning ISLAND mode off, but it must leave
+// the machine in the same safe state, because both pieces of state outlive us:
+// a gate file left behind keeps panes talking to an island Chorus no longer
+// feeds, and CodeIsland's own Claude hooks left disabled would silently break
+// it for every terminal the user has. Synchronous on purpose — `will-quit` does
+// not wait for promises. Whether CodeIsland itself keeps running is the user's
+// call; with its own hooks back it works exactly as it did before.
+app.on('will-quit', () => {
+  restoreIslandOffState();
+});
 
 app.whenReady().then(() => {
   createWindow();

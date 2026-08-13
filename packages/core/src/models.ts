@@ -154,6 +154,17 @@ export interface TracePanelSettings {
   open: boolean;
 }
 
+/** ISLAND mode — streaming the active workspace's panes to CodeIsland. */
+export interface IslandSettings {
+  /** Whether the mode is on. Off restores CodeIsland's own Claude hooks. */
+  enabled: boolean;
+  /**
+   * Explicit path to CodeIsland.app, used only when the bundle id does not
+   * resolve (an app that was never launched from a normal location).
+   */
+  appPath?: string;
+}
+
 /** App-wide settings persisted alongside the workspaces. */
 export interface AppSettings {
   voice?: VoiceSettings;
@@ -161,6 +172,8 @@ export interface AppSettings {
   sessionsPanel?: SessionsPanelSettings;
   /** SESSION TRACE panel open/closed. Accordion-paired with `sessionsPanel`. */
   tracePanel?: TracePanelSettings;
+  /** ISLAND mode on/off (+ an optional override for CodeIsland's location). */
+  islandMode?: IslandSettings;
 }
 
 /** The full persisted state: many workspaces plus which one is active. */

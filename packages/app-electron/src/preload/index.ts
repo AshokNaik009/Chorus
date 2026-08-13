@@ -58,6 +58,11 @@ const api: PaneApi = {
   listSessions: (limit) => ipcRenderer.invoke(IPC.listSessions, limit),
   liveSessions: () => ipcRenderer.invoke(IPC.liveSessions),
   readTrace: (req) => ipcRenderer.invoke(IPC.readTrace, req),
+  islandSetEnabled: (enabled, appPath) =>
+    ipcRenderer.invoke(IPC.islandSetEnabled, enabled, appPath),
+  islandWriteGate: (claudeSessionIds) =>
+    ipcRenderer.invoke(IPC.islandWriteGate, claudeSessionIds),
+  islandProbe: (appPath) => ipcRenderer.invoke(IPC.islandProbe, appPath),
 };
 
 contextBridge.exposeInMainWorld('paneApi', api);

@@ -1,5 +1,6 @@
 import type {
   AppSettings,
+  IslandSettings,
   LayoutNode,
   SessionConfig,
   SessionsPanelSettings,
@@ -295,6 +296,18 @@ function parseTracePanelSettings(raw: unknown): TracePanelSettings | undefined {
   return typeof p.open === 'boolean' ? { open: p.open } : undefined;
 }
 
+function parseIslandSettings(raw: unknown): IslandSettings | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const p = raw as Record<string, unknown>;
+  if (typeof p.enabled !== 'boolean') return undefined;
+  return {
+    enabled: p.enabled,
+    ...(typeof p.appPath === 'string' && p.appPath
+      ? { appPath: p.appPath }
+      : {}),
+  };
+}
+
 /** Best-effort parse of app settings. A bad blob is dropped, never fatal. */
 export function parseAppSettings(raw: unknown): AppSettings | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
@@ -302,11 +315,13 @@ export function parseAppSettings(raw: unknown): AppSettings | undefined {
   const voice = parseVoiceSettings(s.voice);
   const sessionsPanel = parseSessionsPanelSettings(s.sessionsPanel);
   const tracePanel = parseTracePanelSettings(s.tracePanel);
-  if (!voice && !sessionsPanel && !tracePanel) return undefined;
+  const islandMode = parseIslandSettings(s.islandMode);
+  if (!voice && !sessionsPanel && !tracePanel && !islandMode) return undefined;
   return {
     ...(voice ? { voice } : {}),
     ...(sessionsPanel ? { sessionsPanel } : {}),
     ...(tracePanel ? { tracePanel } : {}),
+    ...(islandMode ? { islandMode } : {}),
   };
 }
 

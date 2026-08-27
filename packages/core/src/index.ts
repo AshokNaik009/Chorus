@@ -11,6 +11,7 @@ export * from './status.js';
 export * from './launch.js';
 export * from './osc.js';
 export * from './layout.js';
+export * from './island.js';
 export * from './workspace.js';
 export * from './profile.js';
 export * from './emitter.js';

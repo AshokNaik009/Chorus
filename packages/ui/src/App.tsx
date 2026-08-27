@@ -38,6 +38,8 @@ import {
   type ChorusBundle,
   type ClaudeLaunchConfig,
   type ContextHealth,
+  type IslandBridge,
+  type IslandViewModel,
   type ImportMode,
   type ImportResult,
   type LayoutNode,
@@ -120,6 +122,13 @@ export interface AppProps {
    * transcript store is unreachable, and the panel then isn't rendered.
    */
   traceSource?: SessionTraceSource;
+  /**
+   * macOS Dynamic Island seam (PRD §11 host seam). Present only where a notch
+   * panel can be driven (Electron). When absent the UI never drives an island;
+   * when present it pushes a small view-model and routes the header's
+   * click-to-jump back to `focusSession`. Opt-in via `settings.dynamicIsland`.
+   */
+  island?: IslandBridge;
 }
 
 /** Simplified manual layout: just pick how many terminals (1–6). */
@@ -167,6 +176,7 @@ export function App({
   swarmWorkspace,
   sessionCatalog,
   traceSource,
+  island,
 }: AppProps) {
   const [state, setState] = useState<WorkspaceState | null>(null);
   const [live, setLive] = useState<Session[]>([]);
@@ -645,6 +655,74 @@ export function App({
     setMaximizedId(null);
     handles.current.get(sessionId)?.focus();
   };
+
+  // ---- macOS Dynamic Island (opt-in notch panel) ----
+  // Keep the newest focusSession reachable from the once-registered action
+  // subscription without re-subscribing (and re-showing the notch) each render.
+  const focusSessionRef = useRef(focusSession);
+  focusSessionRef.current = focusSession;
+
+  const islandEnabled = state?.settings?.dynamicIsland?.enabled ?? false;
+  const toggleIsland = useCallback(() => {
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            settings: {
+              ...prev.settings,
+              dynamicIsland: {
+                enabled: !(prev.settings?.dynamicIsland?.enabled ?? false),
+              },
+            },
+          }
+        : prev,
+    );
+  }, []);
+
+  const islandVm = useMemo<IslandViewModel>(() => {
+    const sessions: IslandViewModel['sessions'] = live.map((s) => {
+      const id = s.config.sessionId;
+      const found = state ? findSession(state, id) : null;
+      const status = statusById.get(id) ?? s.status;
+      const health = healthById.get(id);
+      return {
+        sessionId: id,
+        title: found?.cfg.title ?? s.config.title,
+        status,
+        ...(found?.ws.name ? { workspaceName: found.ws.name } : {}),
+        ...(health ? { contextPct: health.pct, contextTier: health.tier } : {}),
+        active: id === focusedId,
+      };
+    });
+    let waitingCount = 0;
+    for (const st of statusById.values()) if (st === 'waiting') waitingCount += 1;
+    return {
+      enabled: islandEnabled,
+      ...(active ? { activeWorkspaceName: active.name } : {}),
+      sessions,
+      waitingCount,
+    };
+  }, [live, state, statusById, healthById, focusedId, active, islandEnabled]);
+
+  // Push the view-model to the notch, but only when it actually changes — the
+  // status pipeline ticks often and we don't want IPC spam on every keystroke.
+  const lastIslandJson = useRef<string>('');
+  useEffect(() => {
+    if (!island) return;
+    const json = JSON.stringify(islandVm);
+    if (json === lastIslandJson.current) return;
+    lastIslandJson.current = json;
+    island.update(islandVm);
+  }, [island, islandVm]);
+
+  // The panel header's click-to-jump routes back here → focus that pane.
+  useEffect(() => {
+    if (!island) return;
+    const sub = island.onAction((action) => {
+      if (action.type === 'jump') focusSessionRef.current(action.sessionId);
+    });
+    return () => sub.dispose();
+  }, [island]);
 
   const onSizes = (path: number[], sizes: number[]) => {
     if (!state || !active) return;
@@ -1911,6 +1989,28 @@ export function App({
             >
               ⚇ Swarm
             </button>
+            {island && (
+              <button
+                onClick={toggleIsland}
+                title={
+                  islandEnabled
+                    ? 'Hide live status in the notch'
+                    : 'Show live session status in the notch (macOS)'
+                }
+                aria-pressed={islandEnabled}
+                style={{
+                  background: islandEnabled ? 'var(--accent)' : 'var(--bg)',
+                  color: islandEnabled ? '#0e1116' : 'var(--fg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  padding: '4px 10px',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                }}
+              >
+                ◗ Notch
+              </button>
+            )}
             {voiceEnabled && (
               <>
                 <VoiceMicButton

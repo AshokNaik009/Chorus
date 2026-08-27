@@ -154,6 +154,14 @@ export interface TracePanelSettings {
   open: boolean;
 }
 
+/**
+ * Opt-in state for the macOS Dynamic Island panel (Electron + notch only). Off
+ * by default; when off, the notch shows nothing and stays fully click-through.
+ */
+export interface DynamicIslandSettings {
+  enabled: boolean;
+}
+
 /** App-wide settings persisted alongside the workspaces. */
 export interface AppSettings {
   voice?: VoiceSettings;
@@ -161,6 +169,8 @@ export interface AppSettings {
   sessionsPanel?: SessionsPanelSettings;
   /** SESSION TRACE panel open/closed. Accordion-paired with `sessionsPanel`. */
   tracePanel?: TracePanelSettings;
+  /** macOS Dynamic Island panel opt-in (Electron only). Absent on older saves. */
+  dynamicIsland?: DynamicIslandSettings;
 }
 
 /** The full persisted state: many workspaces plus which one is active. */

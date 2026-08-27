@@ -193,6 +193,22 @@ describe('parseWorkspaceState', () => {
     expect(parsed?.settings).toEqual({ sessionsPanel: { open: false } });
   });
 
+  it('keeps the Dynamic Island opt-in and drops a malformed one', () => {
+    expect(parseAppSettings({ dynamicIsland: { enabled: true } })).toEqual({
+      dynamicIsland: { enabled: true },
+    });
+    // Missing/!boolean `enabled` is nothing to restore.
+    expect(parseAppSettings({ dynamicIsland: {} })).toBeUndefined();
+    expect(parseAppSettings({ dynamicIsland: { enabled: 'yes' } })).toBeUndefined();
+
+    const base = defaultWorkspaceState();
+    const parsed = parseWorkspaceState({
+      ...JSON.parse(JSON.stringify(base)),
+      settings: { dynamicIsland: { enabled: false } },
+    });
+    expect(parsed?.settings).toEqual({ dynamicIsland: { enabled: false } });
+  });
+
   it('repairs a dangling activeWorkspaceId to the first workspace', () => {
     const s = defaultWorkspaceState();
     const broken = { ...s, activeWorkspaceId: 'gone' };

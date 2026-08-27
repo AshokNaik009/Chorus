@@ -1,5 +1,6 @@
 import type {
   AppSettings,
+  DynamicIslandSettings,
   LayoutNode,
   SessionConfig,
   SessionsPanelSettings,
@@ -295,6 +296,14 @@ function parseTracePanelSettings(raw: unknown): TracePanelSettings | undefined {
   return typeof p.open === 'boolean' ? { open: p.open } : undefined;
 }
 
+function parseDynamicIslandSettings(
+  raw: unknown,
+): DynamicIslandSettings | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const p = raw as Record<string, unknown>;
+  return typeof p.enabled === 'boolean' ? { enabled: p.enabled } : undefined;
+}
+
 /** Best-effort parse of app settings. A bad blob is dropped, never fatal. */
 export function parseAppSettings(raw: unknown): AppSettings | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
@@ -302,11 +311,13 @@ export function parseAppSettings(raw: unknown): AppSettings | undefined {
   const voice = parseVoiceSettings(s.voice);
   const sessionsPanel = parseSessionsPanelSettings(s.sessionsPanel);
   const tracePanel = parseTracePanelSettings(s.tracePanel);
-  if (!voice && !sessionsPanel && !tracePanel) return undefined;
+  const dynamicIsland = parseDynamicIslandSettings(s.dynamicIsland);
+  if (!voice && !sessionsPanel && !tracePanel && !dynamicIsland) return undefined;
   return {
     ...(voice ? { voice } : {}),
     ...(sessionsPanel ? { sessionsPanel } : {}),
     ...(tracePanel ? { tracePanel } : {}),
+    ...(dynamicIsland ? { dynamicIsland } : {}),
   };
 }
 

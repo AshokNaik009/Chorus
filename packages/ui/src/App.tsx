@@ -17,6 +17,7 @@ import {
   DEFAULT_VOICE_SETTINGS,
   defaultWorkspaceState,
   clampSwarmWorkers,
+  findWorkspaceForClaudeSession,
   getActiveWorkspace,
   planAgentWorktrees,
   reconcileImport,
@@ -25,25 +26,33 @@ import {
   removeSwarm,
   removeWorkspace,
   serializeBundle,
+  sessionDisplayTitle,
   setActiveWorkspace,
   setSizesAtPath,
   setWorkspaceLayout,
   SwarmOrchestrator,
+  truncateText,
   updateWorkspace,
   upsertSession,
   upsertSwarm,
   type ChorusBundle,
   type ClaudeLaunchConfig,
   type ContextHealth,
+  type IslandBridge,
+  type IslandViewModel,
   type ImportMode,
   type ImportResult,
   type LayoutNode,
   type Persistence,
   type Session,
   type SessionArchive,
+  type SessionCatalog,
   type SessionConfig,
   type SessionManager,
+  type SessionMeta,
+  type SessionsPanelSettings,
   type SessionStatus,
+  type SessionTraceSource,
   type SwarmDef,
   type SwarmMember,
   type SwarmWorkspace,
@@ -56,6 +65,7 @@ import {
 import { LayoutView } from './LayoutView.js';
 import { TabbedView } from './TabbedView.js';
 import { Sidebar } from './Sidebar.js';
+import { BrandMark } from './Brand.js';
 import { SessionTerminal } from './SessionTerminal.js';
 import { PaneLauncher } from './PaneLauncher.js';
 import { StatusBadge } from './StatusBadge.js';
@@ -71,6 +81,8 @@ import {
 } from './Voice.js';
 import { HelpButton } from './Tutorial.js';
 import { SwarmPanel } from './SwarmPanel.js';
+import { SessionsPanel } from './SessionsPanel.js';
+import { SessionTracePanel } from './SessionTracePanel.js';
 import { DiffReview, type ReviewMember } from './DiffReview.js';
 import { ErrorBoundary } from './ErrorBoundary.js';
 import type { TerminalPaneHandle } from './TerminalPane.js';
@@ -98,12 +110,38 @@ export interface AppProps {
    * files; absent on web, where fan-out runs without a shared dir (US-10.4).
    */
   swarmWorkspace?: SwarmWorkspace;
+  /**
+   * Reader for the machine's Claude Code session store, powering the sidebar's
+   * SESSIONS panel. Present only where `~/.claude` is reachable (Electron);
+   * without it the panel isn't rendered and the sidebar is unchanged.
+   */
+  sessionCatalog?: SessionCatalog;
+  /**
+   * Reader for one transcript's body, powering the sidebar's SESSION TRACE
+   * panel. Like `sessionCatalog` it is a host capability: absent where the
+   * transcript store is unreachable, and the panel then isn't rendered.
+   */
+  traceSource?: SessionTraceSource;
+  /**
+   * macOS Dynamic Island seam (PRD §11 host seam). Present only where a notch
+   * panel can be driven (Electron). When absent the UI never drives an island;
+   * when present it pushes a small view-model and routes the header's
+   * click-to-jump back to `focusSession`. Opt-in via `settings.dynamicIsland`.
+   */
+  island?: IslandBridge;
 }
 
 /** Simplified manual layout: just pick how many terminals (1–6). */
 const TERMINAL_COUNTS = [1, 2, 3, 4, 5, 6];
 
 const SAVE_DEBOUNCE_MS = 400;
+
+/**
+ * Master switch for voice dictation. Off while the app targets an environment
+ * without microphone/CDM support — hides the header mic + settings buttons and
+ * makes the push-to-talk hotkey a no-op. Set to true to bring dictation back.
+ */
+const VOICE_ENABLED = false;
 
 function basename(p: string): string {
   const parts = p.split(/[/\\]/).filter(Boolean);
@@ -136,6 +174,9 @@ export function App({
   sessionArchive,
   transcribers,
   swarmWorkspace,
+  sessionCatalog,
+  traceSource,
+  island,
 }: AppProps) {
   const [state, setState] = useState<WorkspaceState | null>(null);
   const [live, setLive] = useState<Session[]>([]);
@@ -153,6 +194,9 @@ export function App({
     confirmLabel: string;
     onConfirm: () => void;
   } | null>(null);
+  // A transient one-line message ("already open — switched to it"), shown as a
+  // toast. Nothing depends on it, so it self-clears.
+  const [notice, setNotice] = useState<string | null>(null);
 
   const handles = useRef(new Map<string, TerminalPaneHandle>());
 
@@ -171,6 +215,12 @@ export function App({
     async (ws: Workspace, opts?: { liveClaudeIds?: Set<string> }) => {
       for (const cfg of ws.sessions) {
         if (manager.has(cfg.sessionId)) continue;
+        // A pane the user started as a shell comes back as a shell (no command
+        // = plain interactive shell), not as Claude.
+        if (cfg.kind === 'shell') {
+          void manager.spawn(cfg, { cols: 80, rows: 24 }, { command: undefined });
+          continue;
+        }
         let launch: ClaudeLaunchConfig = {};
         const cid = cfg.claudeSessionId;
         if (cid) {
@@ -197,6 +247,13 @@ export function App({
     setLive(manager.list());
     return () => sub.dispose();
   }, [manager]);
+
+  // Notices are informational; they clear themselves so nothing accumulates.
+  useEffect(() => {
+    if (notice === null) return;
+    const t = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   // Load persisted state once, then re-spawn the active workspace's sessions.
   useEffect(() => {
@@ -275,7 +332,13 @@ export function App({
       const next = new Map<string, ContextHealth>();
       for (const s of live) {
         const id = s.config.sessionId;
-        const cwd = findSession(state, id)?.cfg.cwd ?? s.config.cwd;
+        const found = findSession(state, id);
+        // A shell pane has no conversation, so it gets no transcript lookup and
+        // no context badge. Without this it would adopt whatever `.jsonl` is
+        // newest in its directory — a neighbouring session's — and report that
+        // session's occupancy as its own.
+        if ((found?.cfg.kind ?? s.config.kind) === 'shell') continue;
+        const cwd = found?.cfg.cwd ?? s.config.cwd;
         let cid = claudeIdOf(id);
         if (!cid) {
           cid = (await sa.captureSessionId(id, cwd)) ?? undefined;
@@ -340,26 +403,29 @@ export function App({
     }
   }, [swarmWorkspace, active]);
 
-  // How many of a workspace's sessions are actively working (running/waiting) —
-  // the only states whose loss warrants a confirmation. Idle/exited don't.
-  const runningCount = useCallback(
+  // How many of a workspace's sessions a destructive action would close. Any
+  // terminal that still has a PTY counts, not just the busy ones: an idle
+  // conversation you resumed from the SESSIONS panel is exactly as painful to
+  // lose silently as a running one, and losing it that way is what a
+  // confirmation exists to prevent.
+  const openTerminalCount = useCallback(
     (ws: Workspace | undefined): number =>
       ws
         ? ws.sessions.filter((s) => {
             const st = statusById.get(s.sessionId);
-            return st === 'running' || st === 'waiting';
+            return st !== undefined && st !== 'exited';
           }).length
         : 0,
     [statusById],
   );
 
-  // Run `action`, but if the active workspace has live work, confirm first.
+  // Run `action`, but if the active workspace has terminals to lose, confirm.
   const guardActive = useCallback(
     (verb: string, confirmLabel: string, action: () => void) => {
-      const n = runningCount(active);
+      const n = openTerminalCount(active);
       if (n > 0) {
         setPendingConfirm({
-          message: `${n} session${n > 1 ? 's are' : ' is'} still active and will be stopped. ${verb}`,
+          message: `${n} terminal${n > 1 ? 's' : ''} in this workspace will be closed. ${verb}`,
           confirmLabel,
           onConfirm: action,
         });
@@ -367,7 +433,7 @@ export function App({
         action();
       }
     },
-    [active, runningCount],
+    [active, openTerminalCount],
   );
 
   // ---- workspace handlers ----
@@ -414,11 +480,15 @@ export function App({
       const nextActive = getActiveWorkspace(next);
       if (nextActive) void ensureSpawned(nextActive);
     };
-    // Confirm only if THIS workspace has live work (it may not be the active one).
-    const n = runningCount(ws);
-    if (n > 0) {
+    // Confirm if THIS workspace has terminals to lose (it may not be the active
+    // one), or if it is pinned — pinning is the user saying "don't lose this".
+    const n = openTerminalCount(ws);
+    const name = ws?.name ?? 'this workspace';
+    if (n > 0 || ws?.pinned) {
       setPendingConfirm({
-        message: `${n} session${n > 1 ? 's are' : ' is'} still active in "${ws?.name ?? 'this workspace'}" and will be stopped. Close it?`,
+        message: ws?.pinned
+          ? `"${name}" is pinned${n > 0 ? ` and has ${n} open terminal${n > 1 ? 's' : ''}` : ''}. Close it anyway?`
+          : `${n} terminal${n > 1 ? 's' : ''} in "${name}" will be closed. Close it?`,
         confirmLabel: 'Close workspace',
         onConfirm: doClose,
       });
@@ -429,6 +499,18 @@ export function App({
 
   const renameWorkspace = (id: string, name: string) => {
     setState((prev) => (prev ? updateWorkspace(prev, id, { name }) : prev));
+  };
+
+  // Pin/unpin: pinned workspaces sort to the top of the sidebar and confirm
+  // before closing. The stored order never changes, so unpinning restores the
+  // workspace's original position.
+  const toggleWorkspacePinned = (id: string) => {
+    setState((prev) => {
+      if (!prev) return prev;
+      const ws = prev.workspaces.find((w) => w.id === id);
+      if (!ws) return prev;
+      return updateWorkspace(prev, id, { pinned: !ws.pinned });
+    });
   };
 
   const toggleCollapse = (id: string) => {
@@ -485,6 +567,7 @@ export function App({
       sessionId,
       title: title?.trim() || `${label} · ${basename(cwd)}`,
       cwd,
+      kind: isClaude ? 'claude' : 'shell',
       ...(claudeSessionId ? { claudeSessionId } : {}),
     };
     void manager.spawn(cfg, { cols: 80, rows: 24 }, { command: spawnCommand });
@@ -572,6 +655,74 @@ export function App({
     setMaximizedId(null);
     handles.current.get(sessionId)?.focus();
   };
+
+  // ---- macOS Dynamic Island (opt-in notch panel) ----
+  // Keep the newest focusSession reachable from the once-registered action
+  // subscription without re-subscribing (and re-showing the notch) each render.
+  const focusSessionRef = useRef(focusSession);
+  focusSessionRef.current = focusSession;
+
+  const islandEnabled = state?.settings?.dynamicIsland?.enabled ?? false;
+  const toggleIsland = useCallback(() => {
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            settings: {
+              ...prev.settings,
+              dynamicIsland: {
+                enabled: !(prev.settings?.dynamicIsland?.enabled ?? false),
+              },
+            },
+          }
+        : prev,
+    );
+  }, []);
+
+  const islandVm = useMemo<IslandViewModel>(() => {
+    const sessions: IslandViewModel['sessions'] = live.map((s) => {
+      const id = s.config.sessionId;
+      const found = state ? findSession(state, id) : null;
+      const status = statusById.get(id) ?? s.status;
+      const health = healthById.get(id);
+      return {
+        sessionId: id,
+        title: found?.cfg.title ?? s.config.title,
+        status,
+        ...(found?.ws.name ? { workspaceName: found.ws.name } : {}),
+        ...(health ? { contextPct: health.pct, contextTier: health.tier } : {}),
+        active: id === focusedId,
+      };
+    });
+    let waitingCount = 0;
+    for (const st of statusById.values()) if (st === 'waiting') waitingCount += 1;
+    return {
+      enabled: islandEnabled,
+      ...(active ? { activeWorkspaceName: active.name } : {}),
+      sessions,
+      waitingCount,
+    };
+  }, [live, state, statusById, healthById, focusedId, active, islandEnabled]);
+
+  // Push the view-model to the notch, but only when it actually changes — the
+  // status pipeline ticks often and we don't want IPC spam on every keystroke.
+  const lastIslandJson = useRef<string>('');
+  useEffect(() => {
+    if (!island) return;
+    const json = JSON.stringify(islandVm);
+    if (json === lastIslandJson.current) return;
+    lastIslandJson.current = json;
+    island.update(islandVm);
+  }, [island, islandVm]);
+
+  // The panel header's click-to-jump routes back here → focus that pane.
+  useEffect(() => {
+    if (!island) return;
+    const sub = island.onAction((action) => {
+      if (action.type === 'jump') focusSessionRef.current(action.sessionId);
+    });
+    return () => sub.dispose();
+  }, [island]);
 
   const onSizes = (path: number[], sizes: number[]) => {
     if (!state || !active) return;
@@ -796,6 +947,11 @@ export function App({
   );
 
   // ---- voice dictation (PRD Epic 9) ----
+  //
+  // Off for now: the target deployment has no microphone/CDM support, so the
+  // mic + settings buttons are pulled from the header, the push-to-talk hotkey
+  // is inert, and no recording indicator can appear. The engine wiring below is
+  // left intact — flip this back to true to restore dictation.
 
   const engines = useMemo(() => transcribers ?? [], [transcribers]);
   const [availableEngines, setAvailableEngines] = useState<Set<TranscriberId>>(
@@ -822,6 +978,200 @@ export function App({
     );
   }, []);
 
+  // ---- SESSIONS panel (the machine's past Claude Code conversations) ----
+
+  // Panel chrome lives in AppSettings, so a reopened app comes back with the
+  // same panel folded/unfolded and the same project groups open.
+  const sessionsPanel = state?.settings?.sessionsPanel;
+  const sessionsOpen = sessionsPanel?.open ?? false;
+  const expandedProjects = useMemo(
+    () => new Set(sessionsPanel?.expanded ?? []),
+    [sessionsPanel?.expanded],
+  );
+
+  const patchSessionsPanel = useCallback(
+    (patch: Partial<SessionsPanelSettings>) => {
+      setState((prev) => {
+        if (!prev) return prev;
+        const cur = prev.settings?.sessionsPanel ?? { open: false };
+        return {
+          ...prev,
+          settings: { ...prev.settings, sessionsPanel: { ...cur, ...patch } },
+        };
+      });
+    },
+    [],
+  );
+
+  // ---- SESSION TRACE panel (what the focused pane is doing right now) ----
+
+  const traceOpen = state?.settings?.tracePanel?.open ?? false;
+
+  /**
+   * The two bottom panels are an accordion: opening one closes the other. They
+   * share whatever height the workspace tree gives up, and in a ~270px column
+   * splitting that between two scrollers makes both unreadable. Each panel's
+   * state is still persisted separately, so a restart restores what was open.
+   */
+  const setPanels = useCallback((trace: boolean, sessions: boolean) => {
+    setState((prev) => {
+      if (!prev) return prev;
+      const cur = prev.settings?.sessionsPanel ?? { open: false };
+      return {
+        ...prev,
+        settings: {
+          ...prev.settings,
+          tracePanel: { open: trace },
+          sessionsPanel: { ...cur, open: sessions },
+        },
+      };
+    });
+  }, []);
+
+  const toggleTracePanel = useCallback(
+    () => setPanels(!traceOpen, false),
+    [setPanels, traceOpen],
+  );
+
+  /**
+   * Which pane the trace follows: the focused one, falling back to the active
+   * workspace's first pane so a workspace that hasn't been clicked into still
+   * traces something (the same fallback the broadcast/paste paths use).
+   *
+   * Shell panes are excluded deliberately — they have no conversation, and the
+   * "newest transcript in this cwd" guess would hand them a neighbouring
+   * session's trace, exactly the mix-up `SessionConfig.kind` exists to prevent.
+   */
+  const tracedPane = useMemo(() => {
+    if (!state || !active) return undefined;
+    const id = focusedId ?? collectSessionIds(active.layout)[0];
+    if (!id) return undefined;
+    const cfg = findSession(state, id)?.cfg;
+    if (!cfg || cfg.kind === 'shell') return undefined;
+    return {
+      ...(cfg.claudeSessionId ? { claudeSessionId: cfg.claudeSessionId } : {}),
+      cwd: cfg.cwd,
+      label: cfg.title,
+    };
+  }, [state, active, focusedId]);
+
+  const toggleSessionsPanel = useCallback(
+    () => setPanels(false, !sessionsOpen),
+    [setPanels, sessionsOpen],
+  );
+
+  const toggleSessionsProject = useCallback(
+    (dir: string) => {
+      const next = new Set(expandedProjects);
+      if (next.has(dir)) next.delete(dir);
+      else next.add(dir);
+      patchSessionsPanel({ expanded: [...next] });
+    },
+    [expandedProjects, patchSessionsPanel],
+  );
+
+
+  /**
+   * Re-enter a past conversation: a new workspace, one pane, launched with
+   * `--resume` (or `--fork-session` when the conversation is live elsewhere —
+   * two terminals on one transcript interleave both sides into it).
+   *
+   * The workspace adopts the session's own folder because it has to: `--resume`
+   * resolves a session id against the current project directory, and from
+   * anywhere else the CLI reports "No conversation found".
+   */
+  // Every `~/.claude` conversation that already has a workspace — both the ones
+  // opened from the panel and the ones a pane picked up on its own. Feeds the
+  // panel's "already open" marker so a duplicate is visible before the click.
+  const openClaudeIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const w of state?.workspaces ?? []) {
+      if (w.sourceSessionId) ids.add(w.sourceSessionId);
+      for (const c of w.sessions) if (c.claudeSessionId) ids.add(c.claudeSessionId);
+    }
+    return ids;
+  }, [state]);
+
+  const spawnSessionWorkspace = useCallback(
+    async (meta: SessionMeta, fork: boolean) => {
+      if (!state) return;
+      const title = sessionDisplayTitle(meta);
+      const ws = createWorkspace({
+        name: truncateText(title, 28),
+        defaultCwd: meta.cwd,
+      });
+      // Re-entering a session shouldn't throw you back into a view you left:
+      // the new workspace opens the way the one you're looking at is set up.
+      if (active?.view) ws.view = active.view;
+      // Remember where this workspace came from, so a second click on the same
+      // session row finds it instead of building another copy.
+      ws.sourceSessionId = meta.claudeSessionId;
+      const paneId = createSessionId();
+      const cfg: SessionConfig = {
+        sessionId: paneId,
+        title: truncateText(title, 40),
+        cwd: meta.cwd,
+        kind: 'claude',
+        // A resumed pane keeps the id so a restart resumes the same conversation.
+        // A fork gets a NEW id minted by the CLI, which we don't know yet —
+        // leaving it unset lets the existing capture poll bind the real one.
+        ...(fork ? {} : { claudeSessionId: meta.claudeSessionId }),
+      };
+      ws.layout = buildGrid(1, [paneId]);
+      ws.sessions = [cfg];
+
+      setState(addWorkspace(state, ws));
+      setFocusedId(paneId);
+      setMaximizedId(null);
+
+      const command = buildClaudeLaunch({
+        resumeSessionId: meta.claudeSessionId,
+        ...(fork ? { forkSession: true } : {}),
+      });
+      await manager.spawn(cfg, { cols: 80, rows: 24 }, { command });
+    },
+    [state, active, manager],
+  );
+
+  /**
+   * The SESSIONS panel's click handler, with the duplicate check in front of it.
+   * Clicking a row you already opened used to stack up an identical workspace
+   * every time; now the conversation has one home:
+   *
+   *  - resume — switch to the workspace already holding it and say so. Two panes
+   *    resuming one transcript interleave into it, so a second copy is not just
+   *    clutter, it corrupts the conversation.
+   *  - fork — a deliberate second branch off the same history, so it is allowed,
+   *    but only after confirming you meant to fork it again.
+   */
+  const openClaudeSession = useCallback(
+    async (meta: SessionMeta, fork: boolean) => {
+      if (!state) return;
+      const existing = findWorkspaceForClaudeSession(
+        state,
+        meta.claudeSessionId,
+      );
+      if (existing) {
+        if (!fork) {
+          setState(setActiveWorkspace(state, existing.id));
+          void ensureSpawned(existing);
+          setFocusedId(existing.sessions[0]?.sessionId ?? null);
+          setMaximizedId(null);
+          setNotice(`Already open in "${existing.name}" — switched to it.`);
+          return;
+        }
+        setPendingConfirm({
+          message: `This conversation is already open in "${existing.name}". Fork it into another workspace?`,
+          confirmLabel: 'Fork again',
+          onConfirm: () => void spawnSessionWorkspace(meta, fork),
+        });
+        return;
+      }
+      await spawnSessionWorkspace(meta, fork);
+    },
+    [state, ensureSpawned, spawnSessionWorkspace],
+  );
+
   const activeTranscriber = useMemo(() => {
     const avail = engines.filter((t) => availableEngines.has(t.id));
     return avail.find((t) => t.id === voiceSettings.engineId) ?? avail[0] ?? null;
@@ -836,11 +1186,11 @@ export function App({
     transcriber: activeTranscriber,
     mode: voiceSettings.mode,
     focusedSessionId: focusedId,
-    canCapture: focusedIsLive,
+    canCapture: VOICE_ENABLED && focusedIsLive,
     write: writeToSession,
   });
   useVoiceHotkey(voiceSettings.hotkey, voice);
-  const voiceEnabled = engines.length > 0;
+  const voiceEnabled = VOICE_ENABLED && engines.length > 0;
 
   // ---- swarm (PRD Epic 10) ----
 
@@ -1263,6 +1613,12 @@ export function App({
   }
 
   const paneCount = countPanes(active.layout);
+  // The terminal count lays out N *empty* panes, which means discarding whatever
+  // is running here — how a resumed conversation used to vanish on a stray
+  // click. Once the workspace has terminals the control locks; panes are added
+  // one at a time with + (non-destructive), and Reset is the deliberate way back
+  // to a clean grid.
+  const countLocked = openTerminalCount(active) > 0;
   const showMaximized =
     maximizedId !== null && collectSessionIds(active.layout).includes(maximizedId);
 
@@ -1285,11 +1641,38 @@ export function App({
           onToggleCollapse={toggleCollapse}
           onNewWorkspace={newWorkspace}
           onRenameWorkspace={renameWorkspace}
+          onTogglePinned={toggleWorkspacePinned}
           onCloseWorkspace={closeWorkspace}
           onFocusSession={focusSession}
           onRenameSession={renameSession}
           onCloseSession={closeSession}
           onCollapse={() => setSidebarOpen(false)}
+          bottomPanel={
+            <>
+              {traceSource && (
+                <SessionTracePanel
+                  source={traceSource}
+                  open={traceOpen}
+                  onToggleOpen={toggleTracePanel}
+                  claudeSessionId={tracedPane?.claudeSessionId}
+                  cwd={tracedPane?.cwd}
+                  paneLabel={tracedPane?.label}
+                />
+              )}
+              {sessionCatalog && (
+                <SessionsPanel
+                  catalog={sessionCatalog}
+                  open={sessionsOpen}
+                  onToggleOpen={toggleSessionsPanel}
+                  expanded={expandedProjects}
+                  onToggleProject={toggleSessionsProject}
+                  onOpenSession={(meta, fork) => void openClaudeSession(meta, fork)}
+                  openSessionIds={openClaudeIds}
+                  currentCwd={active.defaultCwd}
+                />
+              )}
+            </>
+          }
         />
       ) : (
         <div
@@ -1303,46 +1686,57 @@ export function App({
             flexDirection: 'column',
             alignItems: 'center',
             gap: 10,
-            padding: '11px 0',
+            padding: 0,
           }}
         >
+          {/* Keeps the brand anchored top-left even with the sidebar collapsed. */}
+          <div
+            style={{
+              height: 45,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              alignSelf: 'stretch',
+              borderBottom: '1px solid var(--border)',
+            }}
+            title="LEAP Chorus"
+          >
+            <BrandMark size={18} />
+          </div>
           <button
+            className="sb-icon-btn"
             onClick={() => setSidebarOpen(true)}
             title="Expand sidebar"
             aria-label="Expand sidebar"
-            style={{
-              background: 'transparent',
-              color: 'var(--fg-muted)',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              padding: '3px 7px',
-              cursor: 'pointer',
-              fontSize: 12,
-              lineHeight: 1,
-            }}
           >
             »
           </button>
           <button
+            className="sb-icon-btn"
             onClick={() => {
               setSidebarOpen(true);
               newWorkspace();
             }}
             title="New workspace"
             aria-label="New workspace"
-            style={{
-              background: 'transparent',
-              color: 'var(--fg-muted)',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              padding: '3px 7px',
-              cursor: 'pointer',
-              fontSize: 13,
-              lineHeight: 1,
-            }}
+            style={{ fontSize: 13 }}
           >
             +
           </button>
+          {sessionCatalog && (
+            <button
+              className="sb-icon-btn"
+              onClick={() => {
+                setSidebarOpen(true);
+                if (!sessionsOpen) toggleSessionsPanel();
+              }}
+              title="Past Claude Code sessions"
+              aria-label="Open sessions panel"
+              style={{ fontSize: 12 }}
+            >
+              ⟲
+            </button>
+          )}
           <span
             className="eyebrow"
             title={`${state.workspaces.length} workspaces`}
@@ -1376,23 +1770,15 @@ export function App({
             borderBottom: '1px solid var(--border)',
           }}
         >
-          <strong
+          {/* The wordmark lives in the sidebar's brand band (and on the collapsed
+           *  rail), so the header leads with the active workspace instead. */}
+          <span
             className="disp"
             style={{
-              color: 'var(--accent)',
-              fontWeight: 700,
-              fontSize: 16,
-              letterSpacing: '-0.02em',
-            }}
-          >
-            chorus
-          </strong>
-          <span
-            style={{
               color: 'var(--fg)',
-              fontSize: 12,
+              fontSize: 13,
               fontWeight: 600,
-              maxWidth: 220,
+              maxWidth: 240,
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
@@ -1496,13 +1882,18 @@ export function App({
             <>
               <label
                 htmlFor="terminal-count"
-                style={{ color: 'var(--fg-muted)', fontSize: 12 }}
+                style={{
+                  color: 'var(--fg-muted)',
+                  fontSize: 12,
+                  opacity: countLocked ? 0.5 : 1,
+                }}
               >
                 Terminals
               </label>
               <select
                 id="terminal-count"
                 value={paneCount}
+                disabled={countLocked}
                 onChange={(e) => {
                   const n = Number(e.target.value);
                   if (n === paneCount) return;
@@ -1512,14 +1903,19 @@ export function App({
                     () => setLayoutPanes(n),
                   );
                 }}
-                title="How many terminals to lay out"
+                title={
+                  countLocked
+                    ? 'This workspace has running terminals — the count lays out empty ones and would close them. Use + on a pane to add another.'
+                    : 'How many terminals to lay out'
+                }
                 style={{
                   background: 'var(--bg)',
                   color: 'var(--fg)',
                   border: '1px solid var(--border)',
                   borderRadius: 6,
                   padding: '4px 8px',
-                  cursor: 'pointer',
+                  cursor: countLocked ? 'not-allowed' : 'pointer',
+                  opacity: countLocked ? 0.5 : 1,
                   fontFamily: 'inherit',
                 }}
               >
@@ -1593,6 +1989,28 @@ export function App({
             >
               ⚇ Swarm
             </button>
+            {island && (
+              <button
+                onClick={toggleIsland}
+                title={
+                  islandEnabled
+                    ? 'Hide live status in the notch'
+                    : 'Show live session status in the notch (macOS)'
+                }
+                aria-pressed={islandEnabled}
+                style={{
+                  background: islandEnabled ? 'var(--accent)' : 'var(--bg)',
+                  color: islandEnabled ? '#0e1116' : 'var(--fg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  padding: '4px 10px',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                }}
+              >
+                ◗ Notch
+              </button>
+            )}
             {voiceEnabled && (
               <>
                 <VoiceMicButton
@@ -1709,6 +2127,30 @@ export function App({
           }}
         >
           {voice.error} · click to dismiss
+        </div>
+      )}
+
+      {notice && (
+        <div
+          onClick={() => setNotice(null)}
+          role="status"
+          style={{
+            position: 'fixed',
+            bottom: 16,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 61,
+            background: 'var(--bg-elevated)',
+            color: 'var(--fg)',
+            border: '1px solid var(--border)',
+            borderRadius: 10,
+            padding: '8px 14px',
+            fontSize: 12,
+            cursor: 'pointer',
+            maxWidth: 420,
+          }}
+        >
+          {notice}
         </div>
       )}
 

@@ -1,9 +1,12 @@
 import type {
   AppSettings,
+  DynamicIslandSettings,
   LayoutNode,
   SessionConfig,
+  SessionsPanelSettings,
   SwarmDef,
   SwarmMember,
+  TracePanelSettings,
   VoiceSettings,
   Workspace,
   WorkspaceState,
@@ -44,6 +47,35 @@ export function defaultWorkspaceState(defaultCwd = '~'): WorkspaceState {
 
 export function getActiveWorkspace(state: WorkspaceState): Workspace | undefined {
   return state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+}
+
+/**
+ * The workspace already holding a given `~/.claude` conversation, if any —
+ * either because it was opened from that session (`sourceSessionId`) or because
+ * one of its panes is running it. Opening a session twice should return you to
+ * the workspace you already have rather than minting another copy of it.
+ */
+export function findWorkspaceForClaudeSession(
+  state: WorkspaceState,
+  claudeSessionId: string,
+): Workspace | undefined {
+  return state.workspaces.find(
+    (w) =>
+      w.sourceSessionId === claudeSessionId ||
+      w.sessions.some((s) => s.claudeSessionId === claudeSessionId),
+  );
+}
+
+/**
+ * Display order for the sidebar: pinned workspaces first, each group keeping the
+ * order the user created them in. Pure — the stored order is never rewritten, so
+ * unpinning puts a workspace back exactly where it was.
+ */
+export function orderWorkspaces(workspaces: Workspace[]): Workspace[] {
+  return [
+    ...workspaces.filter((w) => w.pinned),
+    ...workspaces.filter((w) => !w.pinned),
+  ];
 }
 
 // ---- pure, immutable state operations ----
@@ -175,7 +207,8 @@ export function isSessionConfig(v: unknown): v is SessionConfig {
     typeof c.sessionId === 'string' &&
     typeof c.title === 'string' &&
     typeof c.cwd === 'string' &&
-    (c.claudeSessionId === undefined || typeof c.claudeSessionId === 'string')
+    (c.claudeSessionId === undefined || typeof c.claudeSessionId === 'string') &&
+    (c.kind === undefined || c.kind === 'claude' || c.kind === 'shell')
   );
 }
 
@@ -216,6 +249,8 @@ function isWorkspace(v: unknown): v is Workspace {
     typeof w.defaultCwd === 'string' &&
     (w.mode === undefined || w.mode === 'manual' || w.mode === 'swarm') &&
     (w.view === undefined || w.view === 'grid' || w.view === 'tabs') &&
+    (w.pinned === undefined || typeof w.pinned === 'boolean') &&
+    (w.sourceSessionId === undefined || typeof w.sourceSessionId === 'string') &&
     isLayoutNode(w.layout) &&
     Array.isArray(w.sessions) &&
     w.sessions.every(isSessionConfig) &&
@@ -242,12 +277,48 @@ function parseVoiceSettings(raw: unknown): VoiceSettings | undefined {
   };
 }
 
+/** Best-effort parse of the SESSIONS panel's persisted chrome state. */
+function parseSessionsPanelSettings(
+  raw: unknown,
+): SessionsPanelSettings | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const p = raw as Record<string, unknown>;
+  if (typeof p.open !== 'boolean') return undefined;
+  const expanded = Array.isArray(p.expanded)
+    ? p.expanded.filter((d): d is string => typeof d === 'string')
+    : undefined;
+  return { open: p.open, ...(expanded ? { expanded } : {}) };
+}
+
+function parseTracePanelSettings(raw: unknown): TracePanelSettings | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const p = raw as Record<string, unknown>;
+  return typeof p.open === 'boolean' ? { open: p.open } : undefined;
+}
+
+function parseDynamicIslandSettings(
+  raw: unknown,
+): DynamicIslandSettings | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const p = raw as Record<string, unknown>;
+  return typeof p.enabled === 'boolean' ? { enabled: p.enabled } : undefined;
+}
+
 /** Best-effort parse of app settings. A bad blob is dropped, never fatal. */
 export function parseAppSettings(raw: unknown): AppSettings | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const s = raw as Record<string, unknown>;
   const voice = parseVoiceSettings(s.voice);
-  return voice ? { voice } : undefined;
+  const sessionsPanel = parseSessionsPanelSettings(s.sessionsPanel);
+  const tracePanel = parseTracePanelSettings(s.tracePanel);
+  const dynamicIsland = parseDynamicIslandSettings(s.dynamicIsland);
+  if (!voice && !sessionsPanel && !tracePanel && !dynamicIsland) return undefined;
+  return {
+    ...(voice ? { voice } : {}),
+    ...(sessionsPanel ? { sessionsPanel } : {}),
+    ...(tracePanel ? { tracePanel } : {}),
+    ...(dynamicIsland ? { dynamicIsland } : {}),
+  };
 }
 
 /**

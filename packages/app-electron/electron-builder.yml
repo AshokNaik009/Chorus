@@ -1,5 +1,8 @@
 appId: com.chorus.app
 productName: Chorus
+# electron is hoisted to the workspace root, where electron-builder can't
+# auto-detect it; keep this in sync with the version in package-lock.json.
+electronVersion: 42.3.2
 directories:
   output: release
   buildResources: build

@@ -9,6 +9,7 @@ import os from 'node:os';
 import fs from 'node:fs/promises';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { fileURLToPath } from 'node:url';
+import { DynamicIsland } from 'electron-dynamic-island';
 import {
   claudeProjectSlug,
   contextHealthFromTranscript,
@@ -17,7 +18,10 @@ import {
   type ContextHealth,
   type ConversationRef,
   type ImportConversationsResult,
+  type IslandAction,
+  type IslandViewModel,
   type SpawnOptions,
+  type TraceRequest,
   type WorkspaceState,
 } from '@app/core';
 import { FileTreeStore, resolveChorusHome } from '@app/store';
@@ -31,6 +35,8 @@ import {
   removeWorktree,
   reviewWorktree,
 } from './git-worktree.js';
+import { listSessions, liveSessions } from './session-catalog.js';
+import { readTrace } from './session-trace-reader.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -38,6 +44,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // harness (CHORUS_HOME overrides the root). Both hosts may run at once: writes
 // are per-file atomic and the last writer wins per file.
 const store = new FileTreeStore(resolveChorusHome(process.env));
+
+// The macOS Dynamic Island panel is stood up in `setupIsland` (only on a notch
+// MacBook). `mainWindow` lets the panel's click-to-jump surface + focus the
+// Chorus window and forward the action to the renderer.
+let mainWindow: BrowserWindow | null = null;
 
 /** Pre-profile store: one JSON blob in userData. Read once, then retired. */
 function legacyStateFile(): string {
@@ -94,6 +105,8 @@ function createWindow(): void {
     },
   });
 
+  mainWindow = win;
+
   const pty = new PtyHost(win.webContents);
 
   // Renderer -> main (fire-and-forget terminal I/O).
@@ -106,7 +119,10 @@ function createWindow(): void {
   );
   ipcMain.on(IPC.kill, (_e, sessionId: string) => pty.kill(sessionId));
 
-  win.on('closed', () => pty.killAll());
+  win.on('closed', () => {
+    pty.killAll();
+    if (mainWindow === win) mainWindow = null;
+  });
 
   // electron-vite serves the renderer from a dev server URL; production loads
   // the built HTML file.
@@ -301,7 +317,55 @@ ipcMain.handle(
   },
 );
 
+// The SESSIONS panel's two reads: the transcript store, and which of those
+// conversations is live. Both already swallow their own failures; the handlers
+// keep the house rule of never throwing across IPC.
+ipcMain.handle(IPC.listSessions, (_e, limit?: number) => listSessions(limit));
+ipcMain.handle(IPC.liveSessions, () => liveSessions());
+
+// The SESSION TRACE panel's byte reader. Main resolves the project slug from the
+// pane's cwd exactly as the other transcript handlers do; the renderer parses.
+ipcMain.handle(IPC.readTrace, (_e, req: TraceRequest) =>
+  readTrace((cwd) => projectsDir(resolveBase(cwd)), req),
+);
+
+/**
+ * Stand up the macOS Dynamic Island panel, but only on a notch MacBook. On any
+ * other setup `island` stays null and the `island:update` channel has no
+ * listener, so the renderer's pushes are harmless no-ops (Chorus is unchanged).
+ */
+function setupIsland(): void {
+  let di: DynamicIsland;
+  try {
+    di = new DynamicIsland({
+      // Chime when a pane stops working — the panel's stand-in for the Stop
+      // hook (soft: it fires for every pane, not just the focused one).
+      panelSounds: { enabled: true, volume: 0.45 },
+    });
+    if (!di.isSupported()) return;
+  } catch {
+    return; // hardware probe failed — treat as unsupported
+  }
+  di.initPanel();
+
+  // Renderer -> panel: push the latest view-model (or hide when disabled).
+  ipcMain.on(IPC.islandUpdate, (_e, vm: IslandViewModel) => di.updatePanel(vm));
+
+  // Panel header -> Chorus: surface + focus the window, then forward the jump
+  // to the renderer so it can run `focusSession`.
+  di.on('panel-action', (action: IslandAction) => {
+    if (!action || action.type !== 'jump') return;
+    const win = mainWindow;
+    if (!win || win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    win.webContents.send(IPC.islandAction, action);
+  });
+}
+
 app.whenReady().then(() => {
+  setupIsland();
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

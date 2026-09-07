@@ -6,6 +6,7 @@
  */
 import os from 'node:os';
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import type { IslandAction } from '@app/core';
 import {
   IPC,
   type PaneApi,
@@ -55,6 +56,15 @@ const api: PaneApi = {
     ipcRenderer.invoke(IPC.importConversations, refs),
   readContextHealth: (claudeSessionId, cwd) =>
     ipcRenderer.invoke(IPC.readContextHealth, claudeSessionId, cwd),
+  listSessions: (limit) => ipcRenderer.invoke(IPC.listSessions, limit),
+  liveSessions: () => ipcRenderer.invoke(IPC.liveSessions),
+  readTrace: (req) => ipcRenderer.invoke(IPC.readTrace, req),
+  islandUpdate: (vm) => ipcRenderer.send(IPC.islandUpdate, vm),
+  onIslandAction: (cb) => {
+    const listener = (_e: IpcRendererEvent, action: IslandAction) => cb(action);
+    ipcRenderer.on(IPC.islandAction, listener);
+    return () => ipcRenderer.removeListener(IPC.islandAction, listener);
+  },
 };
 
 contextBridge.exposeInMainWorld('paneApi', api);

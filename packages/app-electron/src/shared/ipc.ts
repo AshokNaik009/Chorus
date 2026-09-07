@@ -8,7 +8,13 @@ import type {
   ContextHealth,
   ConversationRef,
   ImportConversationsResult,
+  IslandAction,
+  IslandViewModel,
+  LiveSession,
   MergeResult,
+  SessionMeta,
+  TraceRequest,
+  TraceSlice,
   SpawnOptions,
   WorkspaceState,
   WorktreeReview,
@@ -36,6 +42,13 @@ export const IPC = {
   exportConversations: 'pane:export-conversations',
   importConversations: 'pane:import-conversations',
   readContextHealth: 'pane:read-context-health',
+  listSessions: 'pane:list-sessions',
+  liveSessions: 'pane:live-sessions',
+  readTrace: 'pane:read-trace',
+  /** renderer->main: push the Dynamic Island view-model (macOS notch). */
+  islandUpdate: 'island:update',
+  /** main->renderer: a panel header action (e.g. click-to-jump). */
+  islandAction: 'island:action',
 } as const;
 
 /** Payload for `pane:pty-data` / `pane:pty-exit` (keyed by session). */
@@ -125,4 +138,25 @@ export interface PaneApi {
     claudeSessionId: string,
     cwd: string,
   ): Promise<ContextHealth | null>;
+  /**
+   * Every readable Claude Code conversation on this machine, newest first —
+   * the SESSIONS panel's source. Reads only each transcript's head + tail.
+   */
+  listSessions(limit?: number): Promise<SessionMeta[]>;
+  /** Which of those conversations has a live `claude` process. `[]` if unknown. */
+  liveSessions(): Promise<LiveSession[]>;
+  /**
+   * A window of one transcript's raw bytes — the SESSION TRACE panel's source.
+   * Omitting `from` reads the tail; passing the previous `end` reads only what
+   * the session has appended since. Null when there is no transcript yet.
+   */
+  readTrace(req: TraceRequest): Promise<TraceSlice | null>;
+  /**
+   * Push the Dynamic Island view-model to main (macOS notch panel). Fire-and-
+   * forget; a no-op on hosts/hardware without a notch. Passing `enabled:false`
+   * hides the panel.
+   */
+  islandUpdate(vm: IslandViewModel): void;
+  /** Subscribe to panel header actions (e.g. click-to-jump). Returns unsubscribe. */
+  onIslandAction(cb: (action: IslandAction) => void): () => void;
 }

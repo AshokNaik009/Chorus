@@ -3,7 +3,10 @@ import {
   addWorkspace,
   createWorkspace,
   defaultWorkspaceState,
+  findWorkspaceForClaudeSession,
   getActiveWorkspace,
+  orderWorkspaces,
+  parseAppSettings,
   removeSessionConfig,
   parseWorkspaceState,
   removeWorkspace,
@@ -89,6 +92,52 @@ describe('workspace model', () => {
   });
 });
 
+describe('findWorkspaceForClaudeSession', () => {
+  it('finds the workspace a session was opened from', () => {
+    let s = defaultWorkspaceState();
+    const ws = { ...createWorkspace({ name: 'Resumed' }), sourceSessionId: 'conv-1' };
+    s = addWorkspace(s, ws);
+    expect(findWorkspaceForClaudeSession(s, 'conv-1')?.id).toBe(ws.id);
+  });
+
+  it('finds a workspace whose pane runs the conversation', () => {
+    let s = defaultWorkspaceState();
+    const id = s.activeWorkspaceId;
+    s = upsertSession(s, id, {
+      sessionId: 's1',
+      title: 't',
+      cwd: '/tmp',
+      claudeSessionId: 'conv-2',
+    });
+    expect(findWorkspaceForClaudeSession(s, 'conv-2')?.id).toBe(id);
+  });
+
+  it('returns undefined for a conversation nothing has open', () => {
+    const s = defaultWorkspaceState();
+    expect(findWorkspaceForClaudeSession(s, 'conv-3')).toBeUndefined();
+  });
+});
+
+describe('orderWorkspaces', () => {
+  it('lifts pinned workspaces above the rest, each group keeping its order', () => {
+    const a = createWorkspace({ name: 'a' });
+    const b = { ...createWorkspace({ name: 'b' }), pinned: true };
+    const c = createWorkspace({ name: 'c' });
+    const d = { ...createWorkspace({ name: 'd' }), pinned: true };
+    expect(orderWorkspaces([a, b, c, d]).map((w) => w.name)).toEqual([
+      'b',
+      'd',
+      'a',
+      'c',
+    ]);
+  });
+
+  it('leaves an all-unpinned list untouched', () => {
+    const list = [createWorkspace({ name: 'a' }), createWorkspace({ name: 'b' })];
+    expect(orderWorkspaces(list)).toEqual(list);
+  });
+});
+
 describe('parseWorkspaceState', () => {
   it('round-trips valid state', () => {
     const s = defaultWorkspaceState('~/x');
@@ -110,6 +159,54 @@ describe('parseWorkspaceState', () => {
         activeWorkspaceId: 'a',
       }),
     ).toBeNull();
+  });
+
+  it("keeps a pane's kind and rejects an unknown one", () => {
+    const base = defaultWorkspaceState();
+    const withKind = (kind: unknown) => {
+      const s = JSON.parse(JSON.stringify(base));
+      s.workspaces[0].sessions = [
+        { sessionId: 'p1', title: 'shell · x', cwd: '/x', kind },
+      ];
+      return parseWorkspaceState(s);
+    };
+    expect(withKind('shell')?.workspaces[0].sessions[0].kind).toBe('shell');
+    expect(withKind('claude')?.workspaces[0].sessions[0].kind).toBe('claude');
+    expect(withKind(undefined)?.workspaces[0].sessions[0].kind).toBeUndefined();
+    expect(withKind('agent')).toBeNull();
+  });
+
+  it('keeps the SESSIONS panel state and drops a malformed one', () => {
+    const base = defaultWorkspaceState();
+    const withPanel = parseAppSettings({
+      sessionsPanel: { open: true, expanded: ['/a', 7, '/b'] },
+    });
+    expect(withPanel?.sessionsPanel).toEqual({ open: true, expanded: ['/a', '/b'] });
+
+    // `open` is what the panel is; without it there is nothing to restore.
+    expect(parseAppSettings({ sessionsPanel: { expanded: ['/a'] } })).toBeUndefined();
+
+    const parsed = parseWorkspaceState({
+      ...JSON.parse(JSON.stringify(base)),
+      settings: { sessionsPanel: { open: false } },
+    });
+    expect(parsed?.settings).toEqual({ sessionsPanel: { open: false } });
+  });
+
+  it('keeps the Dynamic Island opt-in and drops a malformed one', () => {
+    expect(parseAppSettings({ dynamicIsland: { enabled: true } })).toEqual({
+      dynamicIsland: { enabled: true },
+    });
+    // Missing/!boolean `enabled` is nothing to restore.
+    expect(parseAppSettings({ dynamicIsland: {} })).toBeUndefined();
+    expect(parseAppSettings({ dynamicIsland: { enabled: 'yes' } })).toBeUndefined();
+
+    const base = defaultWorkspaceState();
+    const parsed = parseWorkspaceState({
+      ...JSON.parse(JSON.stringify(base)),
+      settings: { dynamicIsland: { enabled: false } },
+    });
+    expect(parsed?.settings).toEqual({ dynamicIsland: { enabled: false } });
   });
 
   it('repairs a dangling activeWorkspaceId to the first workspace', () => {

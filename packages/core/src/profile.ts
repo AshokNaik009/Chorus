@@ -73,6 +73,8 @@ interface WorkspaceMeta {
   defaultCwd: string;
   mode?: 'manual' | 'swarm';
   view?: 'grid' | 'tabs';
+  pinned?: boolean;
+  sourceSessionId?: string;
   layout: LayoutNode;
   sessionOrder: string[];
   /** Present iff the workspace has a `swarms` array (round-trip fidelity). */
@@ -92,6 +94,8 @@ function isWorkspaceMeta(v: unknown): v is WorkspaceMeta {
     typeof w.defaultCwd === 'string' &&
     (w.mode === undefined || w.mode === 'manual' || w.mode === 'swarm') &&
     (w.view === undefined || w.view === 'grid' || w.view === 'tabs') &&
+    (w.pinned === undefined || typeof w.pinned === 'boolean') &&
+    (w.sourceSessionId === undefined || typeof w.sourceSessionId === 'string') &&
     isLayoutNode(w.layout) &&
     isStringArray(w.sessionOrder) &&
     (w.swarmOrder === undefined || isStringArray(w.swarmOrder))
@@ -118,6 +122,10 @@ export function planProfileFiles(state: WorkspaceState): ProfileFiles {
       defaultCwd: w.defaultCwd,
       ...(w.mode !== undefined ? { mode: w.mode } : {}),
       ...(w.view !== undefined ? { view: w.view } : {}),
+      ...(w.pinned !== undefined ? { pinned: w.pinned } : {}),
+      ...(w.sourceSessionId !== undefined
+        ? { sourceSessionId: w.sourceSessionId }
+        : {}),
       layout: w.layout,
       sessionOrder: sessions.map((s) => s.sessionId),
       ...(w.swarms !== undefined
@@ -258,6 +266,10 @@ export function assembleProfile(files: ProfileFiles): AssembledProfile {
       defaultCwd: meta.defaultCwd,
       ...(meta.mode !== undefined ? { mode: meta.mode } : {}),
       ...(meta.view !== undefined ? { view: meta.view } : {}),
+      ...(meta.pinned !== undefined ? { pinned: meta.pinned } : {}),
+      ...(meta.sourceSessionId !== undefined
+        ? { sourceSessionId: meta.sourceSessionId }
+        : {}),
       layout: meta.layout,
       sessions,
       // A workspace has a `swarms` array iff workspace.json declared

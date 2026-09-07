@@ -22,6 +22,14 @@ export interface SessionConfig {
    * (PRD Epic 11). Absent until captured / on hosts without `~/.claude`.
    */
   claudeSessionId?: string;
+  /**
+   * What the pane is running. Only `'shell'` panes are explicitly marked: they
+   * have no conversation, so nothing may look for a transcript on their behalf
+   * (the "newest .jsonl in this cwd" guess would otherwise hand a shell pane a
+   * neighbouring session's transcript — and its context reading). Absent means
+   * Claude, which is also what older saves and `ensureSpawned` assume.
+   */
+  kind?: 'claude' | 'shell';
 }
 
 /**
@@ -97,6 +105,20 @@ export interface Workspace {
    * treated as 'grid'. Orthogonal to `mode`: a swarm can be viewed either way.
    */
   view?: 'grid' | 'tabs';
+  /**
+   * Pinned workspaces sort to the top of the sidebar and always confirm before
+   * closing, so the ones you live in don't get lost among resumed sessions.
+   * Absent on older saves; treated as unpinned.
+   */
+  pinned?: boolean;
+  /**
+   * The `~/.claude` conversation this workspace was opened from (SESSIONS
+   * panel). Set for both resume and fork, and it is the origin id in both cases
+   * — a fork's own id is minted by the CLI and never known here. The duplicate
+   * check keys on this, so re-clicking a session row lands back in the
+   * workspace you already have instead of stacking up copies of it.
+   */
+  sourceSessionId?: string;
   layout: LayoutNode;
   /** Configs for panes that have been started (a pane may exist unstarted). */
   sessions: SessionConfig[];
@@ -118,9 +140,37 @@ export interface VoiceSettings {
   language?: string;
 }
 
+/** Persisted chrome state of the sidebar's SESSIONS panel. */
+export interface SessionsPanelSettings {
+  /** Whether the panel is expanded (collapsed shows the header only). */
+  open: boolean;
+  /** Project folders whose session group is expanded. */
+  expanded?: string[];
+}
+
+/** SESSION TRACE panel chrome. */
+export interface TracePanelSettings {
+  /** Whether the panel is expanded (collapsed shows the header only). */
+  open: boolean;
+}
+
+/**
+ * Opt-in state for the macOS Dynamic Island panel (Electron + notch only). Off
+ * by default; when off, the notch shows nothing and stays fully click-through.
+ */
+export interface DynamicIslandSettings {
+  enabled: boolean;
+}
+
 /** App-wide settings persisted alongside the workspaces. */
 export interface AppSettings {
   voice?: VoiceSettings;
+  /** SESSIONS panel open/closed + which project groups are unfolded. */
+  sessionsPanel?: SessionsPanelSettings;
+  /** SESSION TRACE panel open/closed. Accordion-paired with `sessionsPanel`. */
+  tracePanel?: TracePanelSettings;
+  /** macOS Dynamic Island panel opt-in (Electron only). Absent on older saves. */
+  dynamicIsland?: DynamicIslandSettings;
 }
 
 /** The full persisted state: many workspaces plus which one is active. */
